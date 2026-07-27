@@ -125,7 +125,7 @@ The free plan gives you one assigned domain and background endpoints, within its
 ### 2. Clone it and look around
 
 ```sh
-git clone https://github.com/sourabhmorankar/notion-cowork-bridge.git
+git clone https://github.com/soumosa/notion-cowork-bridge.git
 cd notion-cowork-bridge
 npm ci
 npm test

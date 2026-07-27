@@ -15,12 +15,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/sourabhmorankar/notion-cowork-bridge.git"
+    "url": "git+https://github.com/soumosa/notion-cowork-bridge.git"
   },
   "bugs": {
-    "url": "https://github.com/sourabhmorankar/notion-cowork-bridge/issues"
+    "url": "https://github.com/soumosa/notion-cowork-bridge/issues"
   },
-  "homepage": "https://github.com/sourabhmorankar/notion-cowork-bridge#readme",
+  "homepage": "https://github.com/soumosa/notion-cowork-bridge#readme",
   "scripts": {
     "start": "node src/server.js",
     "check": "node scripts/check.mjs",
