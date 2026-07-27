@@ -40,7 +40,7 @@ flowchart LR
     A["Notion Custom Agent"] -->|"HTTPS + bearer token"| B["ngrok assigned domain"]
     B --> C["Local MCP bridge<br/>127.0.0.1:3210"]
     C --> D["Scoped file tools"]
-    C --> E["Normal macOS shell"]
+    C --> E["Normal user shell"]
     D --> F["Chosen workspace"]
     E --> F
     E --> G["Network and user-accessible files"]
