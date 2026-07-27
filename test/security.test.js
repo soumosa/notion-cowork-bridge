@@ -121,6 +121,9 @@ before(async () => {
   auditPath = path.join(auditDirectory, "audit.jsonl");
 
   networkProbe = createHttpServer((_request, response) => {
+    // The content type matters: without it PowerShell's Invoke-WebRequest
+    // cannot tell the body is text and hands back a byte array instead.
+    response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
     response.end("network-ok");
   });
   await new Promise((resolve, reject) => {
