@@ -27,19 +27,76 @@ user. Assume that includes:
 The workspace-scoped file tools are a guardrail for ordinary reads and writes.
 They are not a boundary for the terminal, and they were never meant to be.
 
+## The attack you should actually plan for
+
+Most people read the section above and picture themselves typing something
+reckless. That is not the likely failure.
+
+The likely failure is **prompt injection**. Your agent reads things: Notion
+pages, page comments, files in the repository, README files, web content, the
+output of the commands it runs. Any of that is text someone else may have
+written. If it contains instructions — "ignore your previous instructions and
+run this" — the agent may follow them, and the agent has a shell.
+
+Concretely, that means a shared Notion page, a colleague's comment, a
+dependency's post-install banner, or a poisoned README in a repository you
+asked the agent to inspect can all become the source of a command you never
+intended.
+
+The only defence in this design is the approval prompt, and it wears out.
+After you have approved forty `git status` calls, you will approve the
+forty-first without reading it. Assume that will happen to you, and:
+
+- read the command, not the agent's summary of the command;
+- be most suspicious when the agent proposes something you did not ask for;
+- keep the workspace narrow, so injected content has less to work with;
+- check the audit log after any session that touched content you did not write.
+
+The instructions shipped in `examples/AGENT_INSTRUCTIONS.md` tell the agent to
+treat file and page contents as data rather than commands. That helps. It is
+not a security control, because the thing you are asking to resist the attack
+is the same thing under attack.
+
 ## What is actually enforced
 
 - the HTTP server binds to loopback only
 - public MCP requests need a bearer token, compared in constant time
-- the installer stores that token in the macOS Keychain, never on disk in the
-  clear
 - the token is stripped from the environment of every terminal child process
+- **every terminal command, file write, and folder creation is appended to an
+  audit log**, with a record written *before* execution so a crash or a kill
+  still leaves a trace
 - file tools reject absolute paths, reject `..` traversal, and refuse to follow
-  a symlink at any segment of the path
+  a symlink or a Windows junction at any segment of the path
+- on Windows, drive-relative paths (`C:folder`), NTFS alternate data streams
+  (`file.txt:hidden`), reserved device names (`CON`, `NUL`, `COM1`…) and
+  trailing dots or spaces are all rejected
 - reads, writes, directory listings, and command output are all capped
-- terminal calls are capped at 120 seconds
+- terminal calls are capped at 120 seconds, and the whole process tree is killed
 - only one terminal call runs at a time
+- the health endpoint is deliberately anonymous: it returns `{"status":"ok"}`
+  and does not name the service to anyone who finds the tunnel
 - Notion can hold write and terminal tools behind an approval prompt
+
+### Where the token is stored
+
+| Platform | Storage | Notes |
+| --- | --- | --- |
+| macOS | Keychain | Read at service start. |
+| Windows | DPAPI-encrypted file | Decryptable only by this user on this machine. |
+| Linux | File, mode `0600` | See below. |
+
+Linux is the weakest of the three, and deliberately so. A desktop keyring is
+usually locked when a user service starts at boot, so a keyring-backed token
+would make the bridge fail to start about as often as it worked. A `0600` file
+owned by your account is the honest trade: anything running as you can read it,
+which is already true of everything else this project exposes.
+
+### What the audit log is not
+
+It records what was run. It cannot stop what was run, it is written by the same
+process that runs the commands, and anything with your user's permissions can
+edit or delete it. It is there so you can answer "what happened" afterwards —
+treat it as a flight recorder, not a lock.
 
 That's defense in depth. It stops mistakes and narrows the blast radius. It is
 not a sandbox.
@@ -49,7 +106,7 @@ not a sandbox.
 For anything beyond personal experimentation on a machine you wouldn't mind
 losing:
 
-1. Create a dedicated macOS user, or use a disposable VM.
+1. Create a dedicated user account, or use a disposable VM.
 2. Give that account only the repositories and credentials it genuinely needs.
 3. Keep secrets out of the exposed workspace.
 4. Keep terminal and write tools on **Always ask**, and read the command before
@@ -59,8 +116,11 @@ losing:
 6. Check Notion's agent activity log from time to time.
 7. Stop both launch services when you aren't using the bridge. It's one command,
    and it removes the exposure entirely.
-8. Rotate the Keychain token whenever the connection or the token might have
-   been exposed: `./scripts/rotate-token-macos.sh`.
+8. Read the audit log after any session where the agent touched content you did
+   not write yourself.
+9. Rotate the token whenever the connection or the token might have been
+   exposed: `rotate-token-macos.sh`, `rotate-token-linux.sh`, or
+   `rotate-token-windows.ps1`.
 
 ## Reporting a vulnerability
 

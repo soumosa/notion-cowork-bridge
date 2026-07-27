@@ -174,6 +174,7 @@ fi
   printf 'MCP_WORKSPACE_ROOT=%q\n' "$workspace_root"
   printf 'MCP_ALLOWED_HOSTS=%q\n' "$public_host"
   printf 'MCP_PORT=%q\n' "$mcp_port"
+  printf 'MCP_AUDIT_LOG=%q\n' "$log_dir/audit.jsonl"
 } > "$config_file"
 /bin/chmod 0600 "$config_file"
 

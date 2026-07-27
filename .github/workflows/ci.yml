@@ -9,9 +9,12 @@ permissions:
 
 jobs:
   test:
-    runs-on: macos-latest
+    name: ${{ matrix.os }} / node ${{ matrix.node-version }}
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
         node-version: [20, 22, 24]
     steps:
       - uses: actions/checkout@v4
@@ -20,9 +23,11 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: npm
       # The suite exercises a real Bun install through run_terminal_command.
-      # Without this the Bun test skips itself instead of failing.
+      # Without this the Bun case skips itself instead of failing.
       - uses: oven-sh/setup-bun@v2
       - run: npm ci
+      # Every GitHub runner image ships PowerShell, so this also parses the
+      # Windows scripts on Linux and macOS.
       - run: npm run check
       - run: npm test
       - run: npm audit --omit=dev

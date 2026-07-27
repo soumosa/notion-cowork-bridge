@@ -20,5 +20,6 @@ export MCP_AUTH_TOKEN="$(
 export MCP_WORKSPACE_ROOT
 export MCP_ALLOWED_HOSTS
 export MCP_PORT
+export MCP_AUDIT_LOG
 
 exec "$NODE_BIN" "$RUNTIME_ROOT/src/server.js"

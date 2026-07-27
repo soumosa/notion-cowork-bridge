@@ -1,7 +1,7 @@
 # Notion Cowork Bridge
 
-Give a Notion Custom Agent real file tools and a real macOS terminal, over the
-Model Context Protocol.
+Give a Notion Custom Agent real file tools and a real terminal, over the Model
+Context Protocol. Runs on macOS, Linux, and Windows.
 
 I kept hitting the same wall: the plan, the spec, and the task list all lived in
 Notion, but the moment there was actual work to do I had to leave for a coding
@@ -12,9 +12,12 @@ where the task was written.
 
 > [!CAUTION]
 > The terminal is **not sandboxed**, and that's deliberate. A command can reach
-> anything your macOS user can reach: files outside the workspace, your network,
-> your developer credentials, and destructive system commands. Please read
-> [Security](#security) and [SECURITY.md](SECURITY.md) before you install this.
+> anything your user account can reach: files outside the workspace, your
+> network, your developer credentials, and destructive system commands. The
+> threat that actually catches people is **prompt injection** — text in a page
+> or a file steering the agent into running something you never asked for.
+> Please read [Security](#security) and [SECURITY.md](SECURITY.md) before you
+> install this.
 
 ## What you get
 
@@ -59,10 +62,23 @@ verification — not for a long refactor I'd want to watch closely.
 
 ## What you need
 
-- macOS
+- macOS, Linux (systemd), or Windows 10/11
 - Node.js 20 or newer
 - an [ngrok](https://ngrok.com/) account with the agent authenticated
 - a Notion workspace where Custom Agents and custom MCP connections are enabled
+
+Each platform gets its own installer, service manager, and token store:
+
+| | Installer | Runs under | Token stored in |
+| --- | --- | --- | --- |
+| macOS | `install-macos.sh` | launchd user agents | Keychain |
+| Linux | `install-linux.sh` | systemd user units | file, mode `0600` |
+| Windows | `install-windows.ps1` | Scheduled Tasks at logon | DPAPI-encrypted file |
+
+Linux uses a `0600` file rather than a keyring because a desktop keyring is
+normally locked when a user service starts at boot — a keyring-backed token
+would fail to start about as often as it worked. [SECURITY.md](SECURITY.md)
+explains the trade.
 
 Notion currently documents MCP connections for Custom Agents as a Business or
 Enterprise feature, and a workspace owner may additionally need to turn on
@@ -75,8 +91,29 @@ source of truth here, and both change fairly often.
 
 ### 1. Install the prerequisites
 
+macOS:
+
 ```sh
 brew install node ngrok
+```
+
+Linux — install Node 20+ from your distribution or nodesource, then ngrok from
+[their Linux instructions](https://ngrok.com/docs/getting-started/):
+
+```sh
+sudo snap install ngrok    # or the .deb / .rpm / tarball
+```
+
+Windows:
+
+```powershell
+winget install OpenJS.NodeJS.LTS
+winget install ngrok.ngrok
+```
+
+Then, on every platform:
+
+```sh
 ngrok config add-authtoken YOUR_NGROK_AUTHTOKEN
 ```
 
@@ -100,7 +137,7 @@ You're about to expose a shell to a remote agent, so read
 
 ### 3. Do a dry run first
 
-Swap in your hostname and the folder you actually want to expose:
+Swap in your hostname and the folder you actually want to expose. macOS:
 
 ```sh
 ./scripts/install-macos.sh \
@@ -109,22 +146,48 @@ Swap in your hostname and the folder you actually want to expose:
   --dry-run
 ```
 
+Linux:
+
+```sh
+./scripts/install-linux.sh \
+  --host example-name.ngrok-free.dev \
+  --workspace "$HOME/notion-workspace" \
+  --dry-run
+```
+
+Windows, from PowerShell:
+
+```powershell
+.\scripts\install-windows.ps1 `
+  -PublicHost example-name.ngrok-free.dev `
+  -Workspace "$env:USERPROFILE\notion-workspace" `
+  -DryRun
+```
+
 That validates your arguments and prints the plan without touching anything. If
-the plan looks right, run it again without `--dry-run`.
+the plan looks right, run it again without `--dry-run` / `-DryRun`.
 
-The installer copies a minimal runtime to
-`~/.local/share/notion-cowork-bridge`, creates the workspace if it doesn't
-exist, generates a 64-character bearer token and puts it in the macOS Keychain,
-installs two per-user launch services (the bridge and the tunnel), starts them,
-and waits for the local health check to pass.
+The installer copies a minimal runtime outside the repository, creates the
+workspace if it doesn't exist, generates a 64-character bearer token into the
+platform's token store, registers two per-user services (the bridge and the
+tunnel), starts them, and waits for the local health check to pass.
 
-No `sudo` anywhere. The services come up after login and restart themselves if
-they die.
+No `sudo` and no Administrator anywhere. The services come up at login and
+restart themselves if they die.
+
+On Linux the installer also runs `loginctl enable-linger`, without which your
+user services stop the moment you log out. The parameter on Windows is
+`-PublicHost`, not `-Host` — `$Host` is a reserved PowerShell variable.
 
 ### 4. Grab the token
 
 ```sh
-./scripts/show-token-macos.sh
+./scripts/show-token-macos.sh      # macOS
+./scripts/show-token-linux.sh      # Linux
+```
+
+```powershell
+.\scripts\show-token-windows.ps1   # Windows
 ```
 
 Treat it like a password. Don't commit it, don't paste it into an issue, and
@@ -183,34 +246,64 @@ More prompts I reuse are in [examples/PROMPTS.md](examples/PROMPTS.md).
 
 ## Keeping it running
 
-Check the whole installation at once:
+Check the whole installation at once — `doctor-macos.sh`, `doctor-linux.sh`, or
+`doctor-windows.ps1`. Each prints a PASS/FAIL line per check and exits non-zero
+if anything is wrong.
 
-```sh
-./scripts/doctor-macos.sh
-```
-
-Watch the logs:
+**macOS**
 
 ```sh
 tail -f "$HOME/Library/Logs/notion-cowork-bridge/bridge.log"
-tail -f "$HOME/Library/Logs/notion-cowork-bridge/tunnel.log"
-```
-
-Restart either service:
-
-```sh
 launchctl kickstart -k "gui/$(id -u)/com.notion-cowork-bridge.mcp"
-launchctl kickstart -k "gui/$(id -u)/com.notion-cowork-bridge.tunnel"
-```
-
-Stop everything right now:
-
-```sh
-launchctl bootout "gui/$(id -u)/com.notion-cowork-bridge.mcp"
+launchctl bootout "gui/$(id -u)/com.notion-cowork-bridge.mcp"      # stop now
 launchctl bootout "gui/$(id -u)/com.notion-cowork-bridge.tunnel"
 ```
 
+**Linux**
+
+```sh
+journalctl --user -u notion-cowork-bridge -f
+systemctl --user restart notion-cowork-bridge.service
+systemctl --user stop notion-cowork-bridge.service \
+  notion-cowork-bridge-tunnel.service                              # stop now
+```
+
+**Windows**
+
+```powershell
+Get-ScheduledTask -TaskName NotionCoworkBridge | Get-ScheduledTaskInfo
+Stop-ScheduledTask -TaskName NotionCoworkBridge
+Start-ScheduledTask -TaskName NotionCoworkBridge
+Stop-ScheduledTask -TaskName NotionCoworkBridgeTunnel               # stop now
+```
+
 Re-running the installer restores or updates both services.
+
+## The audit log
+
+Every terminal command, file write, and folder creation is appended as one JSON
+line. The start of a command is recorded *before* it runs, so even a command
+that hangs and gets killed leaves a trace.
+
+| Platform | Location |
+| --- | --- |
+| macOS | `~/Library/Logs/notion-cowork-bridge/audit.jsonl` |
+| Linux | `~/.local/state/notion-cowork-bridge/audit.jsonl` |
+| Windows | `%LOCALAPPDATA%\notion-cowork-bridge\audit.jsonl` |
+
+```sh
+# What has the agent actually run?
+grep '"run_terminal_command.start"' audit.jsonl | jq -r '.time + "  " + .command'
+
+# Anything that failed or was killed?
+jq -c 'select(.event == "run_terminal_command.finish" and (.exitCode != 0 or .timedOut))' audit.jsonl
+```
+
+Read it after any session where the agent touched content you didn't write
+yourself. The bearer token is never written to it.
+
+It is a flight recorder, not a lock: the same process that runs the commands
+writes the log, and anything running as your user can edit it.
 
 ## Troubleshooting
 
@@ -263,11 +356,16 @@ Rotate whenever the token might have leaked, when someone leaves the agent's
 share list, or just periodically:
 
 ```sh
-./scripts/rotate-token-macos.sh
+./scripts/rotate-token-macos.sh       # macOS
+./scripts/rotate-token-linux.sh       # Linux
 ```
 
-It generates a fresh 64-character token, replaces the Keychain entry, and
-restarts the bridge. The old token stops working immediately, so update the
+```powershell
+.\scripts\rotate-token-windows.ps1    # Windows
+```
+
+It generates a fresh 64-character token, replaces the stored one, and restarts
+the bridge. The old token stops working immediately, so update the
 connection in Notion right after — `./scripts/show-token-macos.sh` prints the
 new value.
 
@@ -288,18 +386,19 @@ survives an update untouched.
 
 ## Uninstalling
 
-Stop the services and remove their launch definitions:
+Stop the services and remove their definitions:
 
 ```sh
-./scripts/uninstall-macos.sh
+./scripts/uninstall-macos.sh          # macOS
+./scripts/uninstall-linux.sh          # Linux
 ```
 
-Add `--purge` to also delete the installed runtime, config, logs, and the
-Keychain token:
-
-```sh
-./scripts/uninstall-macos.sh --purge
+```powershell
+.\scripts\uninstall-windows.ps1       # Windows
 ```
+
+Add `--purge` (or `-Purge` on Windows) to also delete the installed runtime,
+config, logs, audit log, and the stored token.
 
 Your workspace is never deleted, purge or not.
 
@@ -342,7 +441,14 @@ skips itself if Bun isn't installed.
 | `MCP_WORKSPACE_ROOT` | `~/Desktop/notion-workspace` | File-tool root, and where commands start |
 | `MCP_ALLOWED_HOSTS` | none | Comma-separated public hostnames the server will answer for |
 | `MCP_PORT` | `3210` | Loopback HTTP port |
-| `SHELL` | `/bin/zsh` | Shell used for terminal commands |
+| `MCP_AUDIT_LOG` | per-platform (above) | Where the JSON-lines audit log is written |
+| `MCP_SHELL` | see below | Shell used for terminal commands |
+| `SHELL` | — | Used as the shell on macOS and Linux when `MCP_SHELL` is unset |
+
+The shell defaults to `$SHELL` if it's an absolute path, then `/bin/zsh` on
+macOS, `/bin/bash` on Linux, and `powershell.exe` on Windows. Commands are
+handed over as `-lc` for POSIX shells, `-NoProfile -NonInteractive -Command`
+for PowerShell, and `/d /s /c` for `cmd.exe`.
 
 The server always binds to `127.0.0.1`. The only public route is the one ngrok
 gives you.
@@ -351,6 +457,13 @@ gives you.
 
 The bearer token answers exactly one question: may this caller talk to the MCP
 server? It does nothing to constrain what an authenticated agent then does.
+
+The threat most people underrate is **prompt injection**. Your agent reads
+Notion pages, comments, repository files and command output — any of which
+someone else may have written. Text in those places can steer the agent into
+running something you never asked for, and the approval prompt is your only
+defence. It wears out: after forty approved `git status` calls you will approve
+the forty-first without reading it. [SECURITY.md](SECURITY.md) goes into detail.
 
 Assume `run_terminal_command` can:
 
@@ -373,16 +486,20 @@ How I'd deploy it:
 - stop both launch services when you're not using the bridge
 
 The bridge does strip its own bearer token from child command environments, cap
-combined command output, allow only one terminal command at a time, and enforce
-a 120-second ceiling. Those controls prevent accidents. They are not a sandbox
-and won't stop a determined command.
+combined command output, allow only one terminal command at a time, enforce a
+120-second ceiling, and write every consequential action to an
+[audit log](#the-audit-log). Those controls prevent accidents and let you
+reconstruct what happened. They are not a sandbox and won't stop a determined
+command.
 
 The full threat model and the disclosure process are in [SECURITY.md](SECURITY.md).
 
 ## Known limits
 
-- macOS is the only platform with a supported installer.
-- The Mac has to be logged in, awake, online, and running both services.
+- The machine has to be logged in, awake, online, and running both services.
+- Linux needs systemd; there's no SysV or OpenRC installer.
+- On Windows the scripts are PowerShell 5.1+ and register Scheduled Tasks, so
+  they need a real user session at logon.
 - Commands are non-interactive. Anything that prompts for input will fail.
 - Command output is capped at 256 KiB.
 - Text reads are capped at 256 KiB; writes at 1 MiB.

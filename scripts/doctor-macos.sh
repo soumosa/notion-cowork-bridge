@@ -44,3 +44,4 @@ fi
 
 print "Bridge URL: https://$public_host/mcp"
 print "Workspace: $MCP_WORKSPACE_ROOT"
+print "Audit log: ${MCP_AUDIT_LOG:-<unset>}"
