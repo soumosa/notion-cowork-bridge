@@ -9,6 +9,8 @@ fi
 
 source "$config_file"
 uid_value="$(/usr/bin/id -u)"
+# MCP_ALLOWED_HOSTS may hold several hostnames; the tunnel serves the first.
+public_host="${MCP_ALLOWED_HOSTS%%,*}"
 failed=0
 
 check() {
@@ -34,11 +36,11 @@ check "tunnel launch service" /bin/launchctl print \
 check "local health endpoint" /usr/bin/curl -fsS --max-time 5 \
   "http://127.0.0.1:$MCP_PORT/health"
 check "public health endpoint" /usr/bin/curl -fsS --max-time 10 \
-  "https://$MCP_ALLOWED_HOSTS/health"
+  "https://$public_host/health"
 
 if (( failed )); then
   exit 1
 fi
 
-print "Bridge URL: https://$MCP_ALLOWED_HOSTS/mcp"
+print "Bridge URL: https://$public_host/mcp"
 print "Workspace: $MCP_WORKSPACE_ROOT"

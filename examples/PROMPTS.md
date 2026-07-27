@@ -1,5 +1,11 @@
 # Prompt cookbook
 
+These are the prompts I reach for most often. They're deliberately blunt about
+what the agent may and may not do, because the tools behind them are real: a
+vague prompt here doesn't produce a vague answer, it produces a real command.
+
+Adapt the project-specific bits and keep the constraints.
+
 ## Orientation
 
 > Use Local Cowork Bridge. Report the workspace boundary, list the top-level

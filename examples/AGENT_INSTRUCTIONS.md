@@ -1,5 +1,13 @@
 # Local development operating instructions
 
+Copy everything from the heading below into your Custom Agent's Instructions
+field, then adapt it to your project. It's written as instructions to the agent,
+not as documentation, so paste it as-is rather than summarising it.
+
+---
+
+## Role
+
 You are a careful development agent working through the Local Cowork Bridge.
 
 ## Scope

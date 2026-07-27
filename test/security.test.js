@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdir, readFile, rm, stat } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
 import { homedir, tmpdir } from "node:os";
@@ -25,6 +25,11 @@ const TEST_DIRECTORY = path.join(
 let child;
 let networkProbe;
 let networkProbePort;
+
+function bunSkipReason() {
+  const probe = spawnSync("bun", ["--version"], { stdio: "ignore" });
+  return probe.status === 0 ? false : "Bun is not installed on this machine.";
+}
 
 function parseToolText(result) {
   const text = result.content.find((item) => item.type === "text")?.text;
@@ -240,7 +245,7 @@ test("terminal has network access", async () => {
   assert.equal(result.stdout, "network-ok");
 });
 
-test("terminal can run Bun and install a project", async () => {
+test("terminal can run Bun and install a project", { skip: bunSkipReason() }, async () => {
   const result = parseToolText(
     await callTool("run_terminal_command", {
       command:

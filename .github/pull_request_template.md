@@ -1,15 +1,18 @@
 ## Summary
 
-Describe the smallest behavior change and why it is needed.
+What's the smallest behavior change here, and why is it needed?
 
 ## Security impact
 
-Describe any change to authentication, file boundaries, terminal access,
-service installation, or secret handling.
+Anything that touches authentication, the file boundary, terminal access,
+service installation, or secret handling. If it touches none of those, say so
+explicitly — that's a useful answer too.
 
 ## Verification
 
 - [ ] `npm run check`
 - [ ] `npm test`
 - [ ] `npm audit --omit=dev`
-- [ ] I tested the edge case most likely to bypass or break this change.
+- [ ] I tested the case most likely to break or bypass this change, and I've
+      described what I observed above.
+- [ ] Docs and `CHANGELOG.md` updated, if behavior or setup changed.

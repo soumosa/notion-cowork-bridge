@@ -1,0 +1,70 @@
+name: Bug report
+description: Something in the bridge, the installer, or the scripts doesn't work.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Before filing, please run `./scripts/doctor-macos.sh` and check the
+        troubleshooting section in the README — it covers the failures that come
+        up most often.
+
+
+        **Never paste your bearer token, your ngrok domain, or raw log lines you
+        haven't read.** Logs can contain paths and hostnames you'd rather keep
+        private.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected, and what you got instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Ran ./scripts/install-macos.sh --host ... --workspace ...
+        2. Asked the agent to ...
+        3. Saw ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: doctor-macos.sh output
+      description: >-
+        The PASS/FAIL lines. Redact the hostname on the last two lines.
+      render: text
+
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: macOS, `node --version`, `ngrok version`, and the commit you're on.
+      placeholder: "macOS 15.5, Node v22.14.0, ngrok 3.19.0, commit b02724d"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines
+      description: >-
+        From `~/Library/Logs/notion-cowork-bridge/`. Redact tokens, hostnames,
+        and absolute paths you don't want public.
+      render: text
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I removed my bearer token and tunnel domain from everything above.
+          required: true
+        - label: I read the troubleshooting section and this isn't covered there.
+          required: true

@@ -1,8 +1,11 @@
 #!/bin/zsh
 set -euo pipefail
 
+# Captured here because $0 inside a function expands to the function name.
+script_name="${0:t}"
+
 usage() {
-  print "Usage: $0 --host <assigned-domain.ngrok-free.dev> [options]"
+  print "Usage: $script_name --host <assigned-domain.ngrok-free.dev> [options]"
   print
   print "Options:"
   print "  --workspace <absolute-path>  Workspace exposed to file tools"

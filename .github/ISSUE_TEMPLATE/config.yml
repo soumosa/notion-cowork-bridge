@@ -1,0 +1,13 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/sourabhmorankar/notion-cowork-bridge/security/advisories/new
+    about: >-
+      Please report vulnerabilities privately, not as a public issue. Note that
+      "an authenticated agent can run arbitrary commands" is the documented
+      purpose of this project, not a vulnerability.
+  - name: Notion Custom Agents and MCP connections
+    url: https://www.notion.com/help/guides/connect-custom-agents-to-mcp-integrations
+    about: >-
+      Questions about plan availability, credits, or the Notion connection UI
+      are answered by Notion, not here.

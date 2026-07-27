@@ -19,6 +19,9 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
+      # The suite exercises a real Bun install through run_terminal_command.
+      # Without this the Bun test skips itself instead of failing.
+      - uses: oven-sh/setup-bun@v2
       - run: npm ci
       - run: npm run check
       - run: npm test

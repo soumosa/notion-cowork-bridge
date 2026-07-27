@@ -4,6 +4,23 @@
   "private": true,
   "type": "module",
   "description": "Give a Notion Custom Agent local file tools and an unrestricted macOS terminal through MCP.",
+  "keywords": [
+    "notion",
+    "mcp",
+    "model-context-protocol",
+    "custom-agent",
+    "macos"
+  ],
+  "author": "Sourabh Morankar <morankarsourabh@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sourabhmorankar/notion-cowork-bridge.git"
+  },
+  "bugs": {
+    "url": "https://github.com/sourabhmorankar/notion-cowork-bridge/issues"
+  },
+  "homepage": "https://github.com/sourabhmorankar/notion-cowork-bridge#readme",
   "scripts": {
     "start": "node src/server.js",
     "check": "node --check src/server.js && node --check test/security.test.js && zsh -n scripts/*.sh",

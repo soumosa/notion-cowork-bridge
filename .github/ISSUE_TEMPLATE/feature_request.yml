@@ -1,0 +1,44 @@
+name: Feature request
+description: Suggest a change to the bridge, the tools, or the install flow.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        This project stays deliberately small. The bar for a new tool or a new
+        installer step is high, and anything that widens what an authenticated
+        agent can do needs a good argument.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you were trying to do, and where the current design got in the way.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you'd like instead
+      description: The smallest change that would solve it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: security
+    attributes:
+      label: Security impact
+      description: >-
+        Does this change what an authenticated agent can reach, how the token is
+        handled, or where the file boundary sits? If not, say so.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried first
+      description: >-
+        Workarounds, or why the terminal tool and an agent instruction can't
+        already cover this.
