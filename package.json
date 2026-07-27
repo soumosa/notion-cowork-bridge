@@ -1,0 +1,22 @@
+{
+  "name": "notion-cowork-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Give a Notion Custom Agent local file tools and an unrestricted macOS terminal through MCP.",
+  "scripts": {
+    "start": "node src/server.js",
+    "check": "node --check src/server.js && node --check test/security.test.js && zsh -n scripts/*.sh",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "zod": "4.4.3"
+  },
+  "overrides": {
+    "@hono/node-server": "2.0.12"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
