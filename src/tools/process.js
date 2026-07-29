@@ -627,7 +627,7 @@ export function registerProcessTools(server, ctx) {
     {
       title: "Run an unrestricted terminal command",
       description:
-        "Run a command with the current user's normal shell, PATH, HOME, filesystem access, and network access, and wait for it to finish. Use start_background_process instead for anything that does not exit on its own, such as a dev server. Commands start inside the selected workspace directory but are not confined to it. The bridge authentication token is removed from the child environment. Output is capped at one combined limit for stdout and stderr together, keeping the start and the end of the output. A handful of catastrophic one-liners (piping a download into a shell, reading an SSH key, deleting the home directory, dumping the keychain, minting AWS session tokens) are refused as a speed bump only — trivially bypassed by anyone actually trying — and commands touching credentials or a shell pipe are flagged in the audit log whether or not they are refused. Every call is written to the audit log.",
+        "Run a command with the current user's normal shell, PATH, HOME, filesystem access, and network access, and wait for it to finish. Use start_background_process for a dev server or other long-running command. Commands start inside the selected workspace directory but are not confined to it. The bridge authentication token is removed from the child environment. Output is capped, and credential-oriented or pipe-to-shell command text is redacted and flagged in the audit log; commands are not denied by a bridge pattern policy.",
       inputSchema: {
         command: z.string().min(1).max(20_000),
         cwd: z.string().default(".").describe("Workspace-relative working directory."),
@@ -659,7 +659,7 @@ export function registerProcessTools(server, ctx) {
     {
       title: "Start a long-running process in the background",
       description:
-        "Spawn a command detached from this call and return immediately with its id, instead of waiting for it to exit. Use this for dev servers, watchers, or anything else that runs until stopped. Output goes to a log file, read with read_process_output; the whole process group is killed by stop_background_process or when the bridge shuts down. The same catastrophic-command speed bump and credential flagging as run_terminal_command apply here.",
+        "Spawn a command detached from this call and return immediately with its id, instead of waiting for it to exit. Use this for dev servers, watchers, or anything else that runs until stopped. Output goes to a bounded owner-only log. The process group is killed by stop_background_process or when the bridge shuts down. Sensitive-looking command text is redacted and flagged in the audit log, but no command pattern is denied.",
       inputSchema: {
         command: z.string().min(1).max(20_000),
         cwd: z.string().default(".").describe("Workspace-relative working directory."),

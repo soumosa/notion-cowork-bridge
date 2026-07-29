@@ -4,6 +4,13 @@ Notable changes to this project. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - 2026-07-29
+
+### Fixed
+
+- Align Notion-facing terminal descriptions and workspace_info with the audit-only terminal policy and the configured process, preview, and browser limits.
+- Allow browser_interact to fill multiple snapshot references in one call.
+
 ## [1.3.0] - 2026-07-29
 
 ### Added

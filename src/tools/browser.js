@@ -309,6 +309,7 @@ export function registerBrowserTools(server, ctx) {
       action: z.enum(["click", "type", "fill", "select", "press", "scroll", "wait"]),
       ref: z.string().optional(),
       text: z.string().optional(),
+      fields: z.array(z.object({ ref: z.string().min(1), text: z.string() })).min(1).optional(),
       value: z.string().optional(),
       key: z.string().optional(),
       clear: z.boolean().default(true),
@@ -322,7 +323,11 @@ export function registerBrowserTools(server, ctx) {
       const session = sessionFor(args.session_id);
       if (args.action === "scroll") await session.page.mouse.wheel(args.dx, args.dy);
       else if (args.action === "wait") await session.page.waitForTimeout(args.timeout_ms);
-      else {
+      else if (args.action === "fill" && args.fields) {
+        for (const field of args.fields) {
+          await (await elementFor(session, field.ref)).fill(field.text, { timeout: args.timeout_ms });
+        }
+      } else {
         if (!args.ref) throw new ToolError(ERROR_CODES.INVALID_ARGUMENT, "This interaction needs a snapshot reference.");
         const element = await elementFor(session, args.ref);
         if (args.action === "click") await element.click({ timeout: args.timeout_ms });
