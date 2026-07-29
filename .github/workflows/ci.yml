@@ -26,8 +26,27 @@ jobs:
       # Without this the Bun case skips itself instead of failing.
       - uses: oven-sh/setup-bun@v2
       - run: npm ci
+      # zsh ships with macOS but not with the Ubuntu runner image, and the
+      # macOS scripts need it for their own -n syntax check below.
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y zsh
+      # ubuntu-latest and macos-latest ship shellcheck already; windows-latest
+      # does not, and check.mjs shellchecks scripts/bridge on every OS.
+      - if: runner.os == 'Windows'
+        run: choco install shellcheck --no-progress -y
+      # Not guaranteed to be preinstalled with every PowerShell on every OS,
+      # so install it explicitly rather than hope.
+      - shell: pwsh
+        run: Install-Module -Name PSScriptAnalyzer -Scope CurrentUser -Force -SkipPublisherCheck
       # Every GitHub runner image ships PowerShell, so this also parses the
-      # Windows scripts on Linux and macOS.
+      # Windows scripts on Linux and macOS. CHECK_STRICT means a checker
+      # silently vanishing from a runner image fails the build instead of
+      # quietly checking less than it used to.
       - run: npm run check
+        env:
+          CHECK_STRICT: "1"
+      # Runs the whole suite, including the installer tests under
+      # test/installers/; each one skips itself on the wrong OS, so this
+      # matrix naturally gives each platform's installer its own real run.
       - run: npm test
       - run: npm audit --omit=dev

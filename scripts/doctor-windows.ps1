@@ -56,6 +56,24 @@ Test-Item 'public health endpoint' {
 
 if ($failed) { exit 1 }
 
+# Token age is a warning, not a failure: an old token still works, it is
+# just overdue for rotation.
+if ($config.PSObject.Properties.Name -contains 'TokenCreatedAt' -and $config.TokenCreatedAt) {
+    try {
+        $createdAt = [datetime]::Parse(
+            $config.TokenCreatedAt, $null,
+            [System.Globalization.DateTimeStyles]::RoundtripKind -bor [System.Globalization.DateTimeStyles]::AssumeUniversal)
+        $ageDays = [int]((Get-Date).ToUniversalTime() - $createdAt.ToUniversalTime()).TotalDays
+        if ($ageDays -gt 90) {
+            Write-Output "WARN: token is $ageDays days old; rotate it with scripts\rotate-token-windows.ps1"
+        }
+    } catch {
+        Write-Output 'WARN: token age unknown (could not parse TokenCreatedAt); rotate to start tracking'
+    }
+} else {
+    Write-Output 'WARN: token age unknown (installed before age tracking); rotate to start tracking'
+}
+
 Write-Output "Bridge URL: https://$publicHost/mcp"
 Write-Output "Workspace: $($config.WorkspaceRoot)"
 Write-Output "Audit log: $($config.AuditLog)"

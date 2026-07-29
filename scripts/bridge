@@ -1,0 +1,148 @@
+#!/bin/sh
+# Single entry point for macOS and Linux. This is a thin router: install,
+# doctor, token, rotate, and uninstall all delegate straight to the
+# per-platform script that already implements them. logs, audit, and
+# set-workspace have no dedicated per-platform script of their own, so
+# they're implemented here directly, using each platform's native shell to
+# read the config file the same way the other scripts do.
+set -eu
+
+script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+
+usage() {
+  cat <<'EOF'
+Usage: bridge <verb> [options]
+
+Verbs:
+  install [options]       Install and start the bridge as a per-user service
+  doctor                  Check the installation and print its status
+  token                   Print the current bearer token
+  rotate [--force]        Replace the bearer token and restart the bridge
+  uninstall [--purge]     Stop and remove the bridge service
+  logs                    Follow the bridge's own process log
+  audit                   Follow the structured audit log
+  set-workspace <path>    Change the workspace root without reinstalling
+
+Run 'bridge <verb> --help' for verb-specific options where supported.
+On Windows, use bridge.ps1 instead.
+EOF
+}
+
+platform=unknown
+case "$(uname -s)" in
+  Darwin) platform=macos ;;
+  Linux) platform=linux ;;
+esac
+
+if [ "$platform" = unknown ]; then
+  echo "Unsupported platform: $(uname -s). Use bridge.ps1 on Windows." >&2
+  exit 1
+fi
+
+verb="${1:-}"
+if [ $# -gt 0 ]; then
+  shift
+fi
+
+case "$verb" in
+  install)   exec "$script_dir/install-$platform.sh" "$@" ;;
+  doctor)    exec "$script_dir/doctor-$platform.sh" "$@" ;;
+  token)     exec "$script_dir/show-token-$platform.sh" "$@" ;;
+  rotate)    exec "$script_dir/rotate-token-$platform.sh" "$@" ;;
+  uninstall) exec "$script_dir/uninstall-$platform.sh" "$@" ;;
+
+  logs)
+    case "$platform" in
+      macos)
+        exec /bin/zsh -c '
+          set -euo pipefail
+          log_dir="$HOME/Library/Logs/notion-cowork-bridge"
+          [[ -r "$log_dir/bridge.log" ]] || { print -u2 "No log file yet: $log_dir/bridge.log"; exit 1; }
+          exec tail -n 200 -f "$log_dir/bridge.log"
+        '
+        ;;
+      linux)
+        exec journalctl --user -u notion-cowork-bridge.service -n 200 -f
+        ;;
+    esac
+    ;;
+
+  audit)
+    case "$platform" in
+      macos)
+        exec /bin/zsh -c '
+          set -euo pipefail
+          config_file="${NOTION_COWORK_CONFIG:-$HOME/.config/notion-cowork-bridge/bridge.env}"
+          [[ -r "$config_file" ]] || { print -u2 "Missing bridge configuration: $config_file"; exit 1; }
+          source "$config_file"
+          [[ -n "${MCP_AUDIT_LOG:-}" ]] || { print -u2 "No audit log configured."; exit 1; }
+          exec tail -n 200 -f "$MCP_AUDIT_LOG"
+        '
+        ;;
+      linux)
+        exec bash -c '
+          set -euo pipefail
+          config_file="${NOTION_COWORK_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/notion-cowork-bridge/bridge.env}"
+          [ -r "$config_file" ] || { echo "Missing bridge configuration: $config_file" >&2; exit 1; }
+          . "$config_file"
+          [ -n "${MCP_AUDIT_LOG:-}" ] || { echo "No audit log configured." >&2; exit 1; }
+          exec tail -n 200 -f "$MCP_AUDIT_LOG"
+        '
+        ;;
+    esac
+    ;;
+
+  set-workspace)
+    new_workspace="${1:-}"
+    [ -n "$new_workspace" ] || { echo "Usage: bridge set-workspace <absolute-path>" >&2; exit 2; }
+    case "$new_workspace" in
+      /*) ;;
+      *) echo "Workspace must be an absolute path." >&2; exit 2 ;;
+    esac
+    mkdir -p "$new_workspace"
+    case "$platform" in
+      macos)
+        /bin/zsh -c '
+          set -euo pipefail
+          new_workspace="$1"
+          config_file="${NOTION_COWORK_CONFIG:-$HOME/.config/notion-cowork-bridge/bridge.env}"
+          [[ -r "$config_file" ]] || { print -u2 "Missing bridge configuration: $config_file"; exit 1; }
+          if /usr/bin/grep -q "^MCP_WORKSPACE_ROOT=" "$config_file"; then
+            /usr/bin/sed -i "" "s|^MCP_WORKSPACE_ROOT=.*|MCP_WORKSPACE_ROOT=$(printf %q "$new_workspace")|" "$config_file"
+          else
+            printf "MCP_WORKSPACE_ROOT=%q\n" "$new_workspace" >> "$config_file"
+          fi
+          /bin/chmod 0600 "$config_file"
+          launchctl_bin="$(command -v launchctl || print -r -- /bin/launchctl)"
+          "$launchctl_bin" kickstart -k "gui/$(/usr/bin/id -u)/com.notion-cowork-bridge.mcp" >/dev/null 2>&1 || true
+          print "Workspace set to $new_workspace and the bridge restarted."
+        ' _ "$new_workspace"
+        ;;
+      linux)
+        bash -c '
+          set -euo pipefail
+          new_workspace="$1"
+          config_file="${NOTION_COWORK_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/notion-cowork-bridge/bridge.env}"
+          [ -r "$config_file" ] || { echo "Missing bridge configuration: $config_file" >&2; exit 1; }
+          if grep -q "^MCP_WORKSPACE_ROOT=" "$config_file"; then
+            sed -i "s|^MCP_WORKSPACE_ROOT=.*|MCP_WORKSPACE_ROOT=$new_workspace|" "$config_file"
+          else
+            echo "MCP_WORKSPACE_ROOT=$new_workspace" >> "$config_file"
+          fi
+          chmod 600 "$config_file"
+          systemctl --user restart notion-cowork-bridge.service
+          echo "Workspace set to $new_workspace and the bridge restarted."
+        ' _ "$new_workspace"
+        ;;
+    esac
+    ;;
+
+  -h|--help|"")
+    usage
+    ;;
+  *)
+    echo "Unknown verb: $verb" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

@@ -48,6 +48,20 @@ if [ "$failed" -ne 0 ]; then
   exit 1
 fi
 
+# Token age is a warning, not a failure: an old token still works, it is
+# just overdue for rotation.
+if [ -n "${TOKEN_CREATED_AT:-}" ]; then
+  created_epoch=$(date -d "$TOKEN_CREATED_AT" +%s 2>/dev/null || echo 0)
+  if [ "$created_epoch" -gt 0 ]; then
+    age_days=$(( ($(date +%s) - created_epoch) / 86400 ))
+    if [ "$age_days" -gt 90 ]; then
+      echo "WARN: token is $age_days days old; rotate it with scripts/rotate-token-linux.sh"
+    fi
+  fi
+else
+  echo "WARN: token age unknown (installed before age tracking); rotate to start tracking"
+fi
+
 echo "Bridge URL: https://$public_host/mcp"
 echo "Workspace: $MCP_WORKSPACE_ROOT"
 echo "Audit log: ${MCP_AUDIT_LOG:-<unset>}"

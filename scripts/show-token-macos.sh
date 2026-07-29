@@ -8,7 +8,8 @@ if [[ ! -r "$config_file" ]]; then
 fi
 
 source "$config_file"
-/usr/bin/security find-generic-password \
+security_bin="$(command -v security || print -r -- /usr/bin/security)"
+"$security_bin" find-generic-password \
   -a "$KEYCHAIN_ACCOUNT" \
   -s "$KEYCHAIN_SERVICE" \
   -w

@@ -16,5 +16,6 @@ export MCP_WORKSPACE_ROOT
 export MCP_ALLOWED_HOSTS
 export MCP_PORT
 export MCP_AUDIT_LOG
+export NODE_ENV="production"
 
 exec "$NODE_BIN" "$RUNTIME_ROOT/src/server.js"

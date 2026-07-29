@@ -17,11 +17,13 @@ config_dir="$HOME/.config/notion-cowork-bridge"
 log_dir="$HOME/Library/Logs/notion-cowork-bridge"
 keychain_service="dev.notion-cowork-bridge.mcp"
 keychain_account="$(/usr/bin/id -un)"
+security_bin="$(command -v security || print -r -- /usr/bin/security)"
+launchctl_bin="$(command -v launchctl || print -r -- /bin/launchctl)"
 
-/bin/launchctl bootout \
+"$launchctl_bin" bootout \
   "gui/$uid_value/com.notion-cowork-bridge.mcp" \
   >/dev/null 2>&1 || true
-/bin/launchctl bootout \
+"$launchctl_bin" bootout \
   "gui/$uid_value/com.notion-cowork-bridge.tunnel" \
   >/dev/null 2>&1 || true
 
@@ -32,7 +34,7 @@ if (( purge )); then
   [[ "$runtime_root" == "$HOME/.local/share/notion-cowork-bridge" ]]
   [[ "$config_dir" == "$HOME/.config/notion-cowork-bridge" ]]
   [[ "$log_dir" == "$HOME/Library/Logs/notion-cowork-bridge" ]]
-  /usr/bin/security delete-generic-password \
+  "$security_bin" delete-generic-password \
     -a "$keychain_account" \
     -s "$keychain_service" \
     >/dev/null 2>&1 || true

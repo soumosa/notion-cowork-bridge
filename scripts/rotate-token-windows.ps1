@@ -42,6 +42,14 @@ ConvertTo-SecureString -String $token -AsPlainText -Force |
     ConvertFrom-SecureString |
     Set-Content -LiteralPath $config.TokenFile -Encoding ASCII
 
+$tokenCreatedAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+if ($config.PSObject.Properties.Name -contains 'TokenCreatedAt') {
+    $config.TokenCreatedAt = $tokenCreatedAt
+} else {
+    $config | Add-Member -NotePropertyName TokenCreatedAt -NotePropertyValue $tokenCreatedAt
+}
+$config | ConvertTo-Json | Set-Content -LiteralPath $configFile -Encoding UTF8
+
 Stop-ScheduledTask -TaskName 'NotionCoworkBridge' -ErrorAction SilentlyContinue
 Start-ScheduledTask -TaskName 'NotionCoworkBridge'
 

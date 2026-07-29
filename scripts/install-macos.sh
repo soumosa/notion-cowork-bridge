@@ -11,6 +11,9 @@ usage() {
   print "  --workspace <absolute-path>  Workspace exposed to file tools"
   print "                               (default: \$HOME/Desktop/notion-workspace)"
   print "  --port <1-65535>             Local MCP port (default: 3210)"
+  print "  --traffic-policy-file <path> ngrok traffic policy file for the tunnel"
+  print "                               (default: \$NGROK_TRAFFIC_POLICY_FILE if set)"
+  print "  --migrate-legacy            Replace the old notion-local-mcp services"
   print "  --dry-run                    Validate and print the plan without changing anything"
   print "  -h, --help                   Show this help"
 }
@@ -18,7 +21,9 @@ usage() {
 workspace_root="$HOME/Desktop/notion-workspace"
 public_host=""
 mcp_port="3210"
+traffic_policy_file="${NGROK_TRAFFIC_POLICY_FILE:-}"
 dry_run=0
+migrate_legacy=0
 
 while (( $# > 0 )); do
   case "$1" in
@@ -37,8 +42,17 @@ while (( $# > 0 )); do
       mcp_port="$2"
       shift 2
       ;;
+    --traffic-policy-file)
+      (( $# >= 2 )) || { print -u2 "Missing value for --traffic-policy-file"; exit 2; }
+      traffic_policy_file="$2"
+      shift 2
+      ;;
     --dry-run)
       dry_run=1
+      shift
+      ;;
+    --migrate-legacy)
+      migrate_legacy=1
       shift
       ;;
     -h|--help)
@@ -80,10 +94,19 @@ print -r -- "$public_host" | /usr/bin/grep -Eq \
   print -u2 "--port must be an integer from 1 to 65535."
   exit 2
 }
+[[ -z "$traffic_policy_file" || -r "$traffic_policy_file" ]] || {
+  print -u2 "Traffic policy file is not readable: $traffic_policy_file"
+  exit 2
+}
 
 node_bin="$(command -v node || true)"
 npm_bin="$(command -v npm || true)"
 ngrok_bin="$(command -v ngrok || true)"
+# Resolved the same way as the binaries above (rather than hardcoded) so a
+# test harness can put stand-ins earlier on PATH; command -v still lands on
+# the real /usr/bin/security and /bin/launchctl on a normal machine.
+security_bin="$(command -v security || print -r -- /usr/bin/security)"
+launchctl_bin="$(command -v launchctl || print -r -- /bin/launchctl)"
 [[ -x "$node_bin" ]] || {
   print -u2 "Node.js 20 or newer is required."
   exit 1
@@ -111,7 +134,11 @@ launch_agent_dir="$HOME/Library/LaunchAgents"
 config_file="$config_dir/bridge.env"
 bridge_plist="$launch_agent_dir/com.notion-cowork-bridge.mcp.plist"
 tunnel_plist="$launch_agent_dir/com.notion-cowork-bridge.tunnel.plist"
+legacy_bridge_plist="$launch_agent_dir/com.abcom.notion-mcp.bridge.plist"
+legacy_gateway_plist="$launch_agent_dir/com.abcom.notion-mcp.gateway.plist"
+legacy_tunnel_plist="$launch_agent_dir/com.abcom.webterm.ngrok.plist"
 keychain_service="dev.notion-cowork-bridge.mcp"
+legacy_keychain_service="com.openai.codex.notion-local-mcp.notionDirect"
 keychain_account="$(/usr/bin/id -un)"
 uid_value="$(/usr/bin/id -u)"
 command_shell="${SHELL:-/bin/zsh}"
@@ -123,6 +150,13 @@ print "Public MCP URL: https://$public_host/mcp"
 print "Node: $node_bin"
 print "ngrok: $ngrok_bin"
 
+legacy_detected=0
+[[ -e "$legacy_bridge_plist" || -e "$legacy_gateway_plist" || -e "$legacy_tunnel_plist" ]] && legacy_detected=1
+if (( legacy_detected && ! migrate_legacy )); then
+  print -u2 "Legacy notion-local-mcp services were found. Re-run with --migrate-legacy to avoid duplicate bridges."
+  exit 2
+fi
+
 if (( dry_run )); then
   print "Dry run complete; no files or services were changed."
   exit 0
@@ -132,7 +166,6 @@ fi
 
 /bin/mkdir -p \
   "$workspace_root" \
-  "$runtime_root/src" \
   "$runtime_root/scripts" \
   "$config_dir" \
   "$log_dir" \
@@ -140,27 +173,45 @@ fi
 
 /usr/bin/install -m 0644 "$repo_root/package.json" "$runtime_root/package.json"
 /usr/bin/install -m 0644 "$repo_root/package-lock.json" "$runtime_root/package-lock.json"
-/usr/bin/install -m 0644 "$repo_root/src/server.js" "$runtime_root/src/server.js"
+/bin/rm -rf "$runtime_root/src"
+/bin/cp -R "$repo_root/src" "$runtime_root/src"
+/usr/bin/find "$runtime_root/src" -type d -exec /bin/chmod 0755 {} +
+/usr/bin/find "$runtime_root/src" -type f -exec /bin/chmod 0644 {} +
 /usr/bin/install -m 0755 \
   "$repo_root/scripts/start-bridge-macos.sh" \
   "$runtime_root/scripts/start-bridge-macos.sh"
 
 (
   cd "$runtime_root"
-  "$npm_bin" ci --omit=dev
+  "$npm_bin" ci --omit=dev --ignore-scripts
 )
 
-if ! /usr/bin/security find-generic-password \
+# Preserve token age across a re-run of this installer; only a freshly
+# created token resets the clock.
+token_created_at=""
+if [[ -r "$config_file" ]]; then
+  token_created_at="$(source "$config_file" 2>/dev/null; print -r -- "${TOKEN_CREATED_AT:-}")"
+fi
+
+if ! "$security_bin" find-generic-password \
   -a "$keychain_account" \
   -s "$keychain_service" \
   >/dev/null 2>&1; then
-  auth_token="$(/usr/bin/openssl rand -hex 32)"
-  /usr/bin/security add-generic-password \
+  auth_token=""
+  if (( migrate_legacy )); then
+    auth_token="$("$security_bin" find-generic-password \
+      -a "$keychain_account" \
+      -s "$legacy_keychain_service" \
+      -w 2>/dev/null || true)"
+  fi
+  [[ -n "$auth_token" ]] || auth_token="$(/usr/bin/openssl rand -hex 32)"
+  "$security_bin" add-generic-password \
     -a "$keychain_account" \
     -s "$keychain_service" \
     -w "$auth_token" \
     -U \
     >/dev/null
+  token_created_at="$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)"
 fi
 
 {
@@ -171,6 +222,7 @@ fi
   printf 'COMMAND_SHELL=%q\n' "$command_shell"
   printf 'KEYCHAIN_ACCOUNT=%q\n' "$keychain_account"
   printf 'KEYCHAIN_SERVICE=%q\n' "$keychain_service"
+  printf 'TOKEN_CREATED_AT=%q\n' "$token_created_at"
   printf 'MCP_WORKSPACE_ROOT=%q\n' "$workspace_root"
   printf 'MCP_ALLOWED_HOSTS=%q\n' "$public_host"
   printf 'MCP_PORT=%q\n' "$mcp_port"
@@ -203,6 +255,9 @@ escaped_log_dir="$(xml_escape "$log_dir")"
   print '  <key>ProgramArguments</key><array>'
   print "    <string>$escaped_start_script</string>"
   print '  </array>'
+  print '  <key>EnvironmentVariables</key><dict>'
+  print '    <key>NODE_ENV</key><string>production</string>'
+  print '  </dict>'
   print '  <key>RunAtLoad</key><true/>'
   print '  <key>KeepAlive</key><true/>'
   print "  <key>StandardOutPath</key><string>$escaped_log_dir/bridge.log</string>"
@@ -222,6 +277,10 @@ escaped_log_dir="$(xml_escape "$log_dir")"
   print "    <string>$escaped_port</string>"
   print '    <string>--url</string>'
   print "    <string>$escaped_url</string>"
+  if [[ -n "$traffic_policy_file" ]]; then
+    print '    <string>--traffic-policy-file</string>'
+    print "    <string>$(xml_escape "$traffic_policy_file")</string>"
+  fi
   print '  </array>'
   print '  <key>RunAtLoad</key><true/>'
   print '  <key>KeepAlive</key><true/>'
@@ -233,14 +292,19 @@ escaped_log_dir="$(xml_escape "$log_dir")"
 /bin/chmod 0644 "$bridge_plist" "$tunnel_plist"
 /usr/bin/plutil -lint "$bridge_plist" "$tunnel_plist"
 
-/bin/launchctl bootout \
+"$launchctl_bin" bootout \
   "gui/$uid_value/com.notion-cowork-bridge.mcp" \
   >/dev/null 2>&1 || true
-/bin/launchctl bootout \
+"$launchctl_bin" bootout \
   "gui/$uid_value/com.notion-cowork-bridge.tunnel" \
   >/dev/null 2>&1 || true
-/bin/launchctl bootstrap "gui/$uid_value" "$bridge_plist"
-/bin/launchctl bootstrap "gui/$uid_value" "$tunnel_plist"
+if (( migrate_legacy )); then
+  "$launchctl_bin" bootout "gui/$uid_value/com.abcom.webterm.ngrok" >/dev/null 2>&1 || true
+  "$launchctl_bin" bootout "gui/$uid_value/com.abcom.notion-mcp.gateway" >/dev/null 2>&1 || true
+  "$launchctl_bin" bootout "gui/$uid_value/com.abcom.notion-mcp.bridge" >/dev/null 2>&1 || true
+fi
+"$launchctl_bin" bootstrap "gui/$uid_value" "$bridge_plist"
+"$launchctl_bin" bootstrap "gui/$uid_value" "$tunnel_plist"
 
 healthy=0
 for _attempt in {1..20}; do

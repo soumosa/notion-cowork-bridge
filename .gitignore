@@ -8,3 +8,6 @@ coverage/
 *.pem
 *.key
 *.token
+
+# Session handoff notes written by tooling; never part of the project.
+HANDOFF.md

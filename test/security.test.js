@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtempSync, realpathSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
@@ -12,8 +13,15 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 
 const IS_WINDOWS = process.platform === "win32";
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+// A temp directory, not two levels above the repo. The suite deletes its
+// workspace on the way out, and pointing that at a real directory in someone's
+// home is a bad thing to ship in a file people are told to read.
 const WORKSPACE_ROOT =
-  process.env.TEST_WORKSPACE_ROOT || path.resolve(PROJECT_ROOT, "../..");
+  process.env.TEST_WORKSPACE_ROOT ||
+  // realpath, because macOS hands out /var/folders/... which is a symlink to
+  // /private/var/folders/..., and the server resolves symlinks before it
+  // compares. Without this every path looks like it is outside the workspace.
+  realpathSync(mkdtempSync(path.join(tmpdir(), "notion-bridge-workspace-")));
 const PORT = 33210;
 const TOKEN = "local-test-token-0123456789-0123456789";
 const BASE_URL = `http://127.0.0.1:${PORT}`;
@@ -180,7 +188,26 @@ test("the health endpoint does not name the service", async () => {
   assert.deepEqual(body, { status: "ok" });
 });
 
-test("advertises the expected six tools", async () => {
+test("browser opens an allowed loopback page, snapshots, screenshots, and closes", async (t) => {
+  const status = parseToolText(await callTool("browser_status"));
+  if (!status.available) {
+    t.skip("Chrome, Chromium, or Edge is not installed on this test machine.");
+    return;
+  }
+  const opened = parseToolText(await callTool("browser_open", {
+    port: networkProbePort,
+    path: "/",
+  }));
+  const snapshot = parseToolText(await callTool("browser_snapshot", { session_id: opened.session_id }));
+  assert.equal(snapshot.session_id, opened.session_id);
+  const image = await callTool("browser_screenshot", { session_id: opened.session_id });
+  assert.equal(image.isError, undefined);
+  assert.equal(image.content[0].type, "image");
+  const closed = parseToolText(await callTool("browser_close", { session_id: opened.session_id }));
+  assert.equal(closed.closed, opened.session_id);
+});
+
+test("advertises exactly the tools it means to", async () => {
   const client = new Client({ name: "tool-list-test", version: "1.0.0" });
   const transport = new StreamableHTTPClientTransport(
     new URL(`${BASE_URL}/mcp`),
@@ -192,14 +219,70 @@ test("advertises the expected six tools", async () => {
   assert.deepEqual(
     tools.map((tool) => tool.name).sort(),
     [
+      "browser_close",
+      "browser_console",
+      "browser_eval",
+      "browser_interact",
+      "browser_network",
+      "browser_open",
+      "browser_screenshot",
+      "browser_snapshot",
+      "browser_status",
+      "browser_upload",
+      "capture_screenshot",
       "create_directory",
+      "delete_path",
+      "edit_text_file",
+      "glob_files",
+      "http_probe",
+      "http_request",
+      "list_background_processes",
       "list_files",
+      "move_path",
+      "read_bytes",
+      "read_media_file",
+      "read_process_output",
       "read_text_file",
       "run_terminal_command",
+      "search_text",
+      "share_preview",
+      "start_background_process",
+      "stop_background_process",
+      "stop_preview",
       "workspace_info",
       "write_text_file",
     ],
   );
+});
+
+// Adding a tool is the moment to decide whether it is destructive and whether
+// it reaches the network. Declaring it is cheap; discovering it later is not.
+test("every tool declares a title, a description and full annotations", async () => {
+  const client = new Client({ name: "contract", version: "1.0.0" });
+  const transport = new StreamableHTTPClientTransport(
+    new URL(`${BASE_URL}/mcp`),
+    { requestInit: { headers: { Authorization: `Bearer ${TOKEN}` } } },
+  );
+  await client.connect(transport);
+  const { tools } = await client.listTools();
+  await client.close();
+
+  for (const tool of tools) {
+    assert.ok(tool.description, `${tool.name} has no description`);
+    assert.ok(tool.title || tool.annotations?.title, `${tool.name} has no title`);
+    for (const hint of [
+      "readOnlyHint",
+      "destructiveHint",
+      "idempotentHint",
+      "openWorldHint",
+    ]) {
+      assert.equal(
+        typeof tool.annotations?.[hint],
+        "boolean",
+        `${tool.name} does not declare ${hint}`,
+      );
+    }
+  }
 });
 
 test("workspace_info reports the platform and the audit log location", async () => {
@@ -349,19 +432,25 @@ test("audit log records writes and directory creation", async () => {
   await callTool("create_directory", { path: `${RELATIVE_DIR}/audited-dir` });
 
   const records = await readAuditRecords();
-  assert.ok(
-    records.some(
-      (entry) =>
-        entry.event === "write_text_file" && entry.path.includes("audited.txt"),
-    ),
-  );
-  assert.ok(
-    records.some(
-      (entry) =>
-        entry.event === "create_directory" &&
-        entry.path.includes("audited-dir"),
-    ),
-  );
+  for (const [event, needle] of [
+    ["write_text_file", "audited.txt"],
+    ["create_directory", "audited-dir"],
+  ]) {
+    for (const phase of ["start", "finish"]) {
+      assert.ok(
+        records.some(
+          (entry) =>
+            entry.event === `${event}.${phase}` && entry.path.includes(needle),
+        ),
+        `no ${event}.${phase} record for ${needle}`,
+      );
+    }
+  }
+
+  // The start record is the one that survives a crash, so it has to come first.
+  const startIndex = records.findIndex((e) => e.event === "write_text_file.start");
+  const finishIndex = records.findIndex((e) => e.event === "write_text_file.finish");
+  assert.ok(startIndex >= 0 && startIndex < finishIndex);
 });
 
 test("terminal can read elsewhere in the user home folder", async () => {
@@ -430,4 +519,311 @@ test("terminal can run Bun and install a project", { skip: bunSkipReason() }, as
     (await stat(path.join(TEST_DIRECTORY, "bun-smoke", "bun.lock"))).isFile(),
     true,
   );
+});
+
+// ---------------------------------------------------------------------------
+// Auth edge cases. Only "no header at all" was covered above; a wrong token
+// of the same length as the real one is the case that actually exercises
+// timingSafeEqual rather than the length check that runs before it.
+// ---------------------------------------------------------------------------
+
+function initializeRequestBody() {
+  return JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: {
+      protocolVersion: "2025-06-18",
+      capabilities: {},
+      clientInfo: { name: "auth-edge-case-test", version: "1.0.0" },
+    },
+  });
+}
+
+async function postWithAuthHeader(headerValue) {
+  const headers = { "content-type": "application/json" };
+  if (headerValue !== undefined) headers.Authorization = headerValue;
+  return fetch(`${BASE_URL}/mcp`, {
+    method: "POST",
+    headers,
+    body: initializeRequestBody(),
+  });
+}
+
+test("rejects a wrong token of the same length as the real one", async () => {
+  // Same length as TOKEN means the length check in authorized() passes and
+  // timingSafeEqual itself has to be the thing that says no.
+  const sameLengthWrongToken = "z".repeat(TOKEN.length);
+  assert.notEqual(sameLengthWrongToken, TOKEN);
+  const response = await postWithAuthHeader(`Bearer ${sameLengthWrongToken}`);
+  assert.equal(response.status, 401);
+});
+
+test("rejects a wrong token of a different length", async () => {
+  const response = await postWithAuthHeader("Bearer too-short-to-be-right");
+  assert.equal(response.status, 401);
+});
+
+test("rejects a malformed Authorization header", async () => {
+  const response = await postWithAuthHeader("NotBearer whatever-this-is");
+  assert.equal(response.status, 401);
+});
+
+test("rejects a lowercase bearer scheme", async () => {
+  // HTTP scheme names are conventionally case-insensitive, but authorized()
+  // does an exact string comparison against "Bearer <token>", so this is
+  // expected to fail rather than a bug to fix.
+  const response = await postWithAuthHeader(`bearer ${TOKEN}`);
+  assert.equal(response.status, 401);
+});
+
+test("authentication failures are written to the audit log", async () => {
+  const before = (await readAuditRecords()).filter((r) => r.event === "auth.failure").length;
+  const response = await postWithAuthHeader("Bearer some-wrong-token-that-is-not-the-real-one");
+  assert.equal(response.status, 401);
+
+  const records = await readAuditRecords();
+  const failures = records.filter((r) => r.event === "auth.failure");
+  assert.ok(failures.length > before, "expected at least one new auth.failure record");
+  const latest = failures.at(-1);
+  assert.equal(typeof latest.source, "string");
+  assert.equal(typeof latest.failureCount, "number");
+  assert.equal(typeof latest.delayMs, "number");
+  // The bearer token must never appear in the log, including in a failure record.
+  const raw = await readFile(auditPath, "utf8");
+  assert.equal(raw.includes(TOKEN), false);
+});
+
+// ---------------------------------------------------------------------------
+// Limits and truncation. Matches the constants in src/lib/config.js; kept
+// literal here rather than imported so this file never has to import
+// MCP_AUTH_TOKEN-checking modules into the test process itself.
+// ---------------------------------------------------------------------------
+
+const MAX_WRITE_BYTES = 1024 * 1024;
+const MAX_READ_BYTES = 256 * 1024;
+const MAX_LIST_ENTRIES = 1000;
+
+test("the write cap admits exactly the limit and rejects one byte more", async () => {
+  const atCap = parseToolText(
+    await callTool("write_text_file", {
+      path: `${RELATIVE_DIR}/write-cap-exact.txt`,
+      content: "a".repeat(MAX_WRITE_BYTES),
+    }),
+  );
+  assert.equal(atCap.bytesWritten, MAX_WRITE_BYTES);
+
+  const overCap = await callTool("write_text_file", {
+    path: `${RELATIVE_DIR}/write-cap-over.txt`,
+    content: "a".repeat(MAX_WRITE_BYTES + 1),
+  });
+  assert.equal(overCap.isError, true);
+  assert.match(parseToolText(overCap), /E_TOO_LARGE/);
+});
+
+test("the read cap admits a file one byte under the limit and rejects one over", async () => {
+  await callTool("write_text_file", {
+    path: `${RELATIVE_DIR}/read-cap-under.txt`,
+    content: "a".repeat(MAX_READ_BYTES - 1),
+  });
+  const under = parseToolText(
+    await callTool("read_text_file", { path: `${RELATIVE_DIR}/read-cap-under.txt` }),
+  );
+  assert.equal(under.text.length, MAX_READ_BYTES - 1);
+
+  await callTool("write_text_file", {
+    path: `${RELATIVE_DIR}/read-cap-over.txt`,
+    content: "a".repeat(MAX_READ_BYTES + 1),
+  });
+  const over = await callTool("read_text_file", { path: `${RELATIVE_DIR}/read-cap-over.txt` });
+  assert.equal(over.isError, true);
+  assert.match(parseToolText(over), /E_TOO_LARGE/);
+});
+
+// A file of exactly MAX_READ_BYTES used to be rejected when its last line had
+// no trailing newline: the line accounting charged a separator byte after every
+// emitted line, including the last one. N lines carry N-1 separators, so both
+// shapes of the same file size have to read.
+test("a file of exactly the read cap reads whether or not it ends with a newline", async () => {
+  await callTool("write_text_file", {
+    path: `${RELATIVE_DIR}/read-cap-no-newline.txt`,
+    content: "a".repeat(MAX_READ_BYTES),
+  });
+  const noTrailingNewline = parseToolText(
+    await callTool("read_text_file", { path: `${RELATIVE_DIR}/read-cap-no-newline.txt` }),
+  );
+  assert.equal(noTrailingNewline.text.length, MAX_READ_BYTES);
+
+  await callTool("write_text_file", {
+    path: `${RELATIVE_DIR}/read-cap-with-newline.txt`,
+    content: `${"a".repeat(MAX_READ_BYTES - 1)}\n`,
+  });
+  const withTrailingNewline = parseToolText(
+    await callTool("read_text_file", { path: `${RELATIVE_DIR}/read-cap-with-newline.txt` }),
+  );
+  assert.equal(withTrailingNewline.text.length, MAX_READ_BYTES - 1);
+});
+
+test("list_files truncates at MAX_LIST_ENTRIES and reports truncated: true", async () => {
+  const manyFilesDir = path.join(TEST_DIRECTORY, "many-files");
+  await mkdir(manyFilesDir, { recursive: true });
+  const extra = 25;
+  for (let i = 0; i < MAX_LIST_ENTRIES + extra; i += 1) {
+    await writeFile(path.join(manyFilesDir, `f${i}.txt`), "");
+  }
+
+  const listed = parseToolText(
+    await callTool("list_files", { path: `${RELATIVE_DIR}/many-files`, depth: 0 }),
+  );
+  assert.equal(listed.entries.length, MAX_LIST_ENTRIES);
+  assert.equal(listed.truncated, true);
+});
+
+test(
+  "a UTF-8 emoji round-trips exactly through write_text_file and read_text_file",
+  async () => {
+    const content = "hello 😀 world — café résumé 中文\n";
+    await callTool("write_text_file", { path: `${RELATIVE_DIR}/emoji.txt`, content });
+    const read = parseToolText(
+      await callTool("read_text_file", { path: `${RELATIVE_DIR}/emoji.txt` }),
+    );
+    assert.equal(read.text, content.trimEnd());
+    assert.equal(read.hasTrailingNewline, true);
+  },
+);
+
+test("run_terminal_command truncates combined output over the limit and marks outputTruncated", async () => {
+  const command = IS_WINDOWS
+    ? "$w=[Console]::OpenStandardOutput();$b=[System.Text.Encoding]::UTF8.GetBytes('START-');$w.Write($b,0,$b.Length);" +
+      "$line=[System.Text.Encoding]::UTF8.GetBytes([char]::ConvertFromUtf32(0x1F600)+\"`n\");" +
+      "for($i=0;$i -lt 100000;$i++){$w.Write($line,0,$line.Length)};" +
+      "$e=[System.Text.Encoding]::UTF8.GetBytes('-END');$w.Write($e,0,$e.Length);$w.Flush()"
+    : "printf 'START-'; yes 😀 | head -n 100000; printf -- '-END'";
+  const result = parseToolText(
+    await callTool("run_terminal_command", { command, cwd: ".", timeout_ms: 20_000 }),
+  );
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.outputTruncated, true);
+  assert.ok(result.stdout.startsWith("START-"));
+  assert.ok(result.stdout.endsWith("-END"));
+  // The head/tail cut points fall inside the repeated multi-byte character
+  // (a 4-byte emoji does not evenly divide the head or tail budget), so this
+  // is exactly the shape of input that used to turn into U+FFFD when
+  // truncation just sliced bytes and called .toString("utf8"). None should
+  // appear now that the collector holds back an incomplete character
+  // instead of emitting a replacement for it.
+  assert.equal(result.stdout.includes("�"), false);
+});
+
+test("run_terminal_command accepts a command of exactly 20,000 characters and rejects one longer", async () => {
+  const prefix = IS_WINDOWS ? "Write-Output 'command-cap-ok'; #" : "printf 'command-cap-ok'; #";
+  const padTo = (length) => prefix + "x".repeat(length - prefix.length);
+
+  const atCap = padTo(20_000);
+  assert.equal(atCap.length, 20_000);
+  const atCapResult = parseToolText(
+    await callTool("run_terminal_command", { command: atCap, cwd: ".", timeout_ms: 10_000 }),
+  );
+  assert.equal(atCapResult.exitCode, 0);
+  assert.equal(atCapResult.stdout.trim(), "command-cap-ok");
+
+  const overCap = padTo(20_001);
+  const overCapResult = await callTool("run_terminal_command", {
+    command: overCap,
+    cwd: ".",
+    timeout_ms: 10_000,
+  });
+  assert.equal(overCapResult.isError, true);
+  assert.match(parseToolText(overCapResult), /20000|too big/i);
+});
+
+// ---------------------------------------------------------------------------
+// Concurrency. The lock now queues for up to ~10 seconds instead of failing
+// immediately, so two quick commands fired at once should both succeed
+// rather than one of them getting E_BUSY.
+// ---------------------------------------------------------------------------
+
+test("two simultaneous run_terminal_command calls both complete rather than one failing fast", async () => {
+  const [first, second] = await Promise.all([
+    callTool("run_terminal_command", { command: "echo concurrency-one", cwd: ".", timeout_ms: 15_000 }),
+    callTool("run_terminal_command", { command: "echo concurrency-two", cwd: ".", timeout_ms: 15_000 }),
+  ]);
+  const firstResult = parseToolText(first);
+  const secondResult = parseToolText(second);
+  assert.equal(first.isError, undefined);
+  assert.equal(second.isError, undefined);
+  assert.equal(firstResult.exitCode, 0);
+  assert.equal(secondResult.exitCode, 0);
+  assert.equal(firstResult.stdout.trim(), "concurrency-one");
+  assert.equal(secondResult.stdout.trim(), "concurrency-two");
+});
+
+// ---------------------------------------------------------------------------
+// Filesystem correctness.
+// ---------------------------------------------------------------------------
+
+test(
+  "a 0755 file survives a rewrite with its mode intact",
+  { skip: windowsOnly("POSIX permission bits are not meaningful on Windows.") },
+  async () => {
+    const target = path.join(TEST_DIRECTORY, "executable.sh");
+    await writeFile(target, "#!/bin/sh\necho original\n");
+    await chmod(target, 0o755);
+
+    await callTool("write_text_file", {
+      path: `${RELATIVE_DIR}/executable.sh`,
+      content: "#!/bin/sh\necho replaced\n",
+    });
+
+    const mode = (await stat(target)).mode & 0o777;
+    assert.equal(mode, 0o755);
+  },
+);
+
+test("a write that fails at the rename step leaves no leftover temp file behind", async () => {
+  // Writing to a path that already exists as a directory reaches the rename
+  // step (the temp file is created successfully) and fails there with
+  // EISDIR, which is exactly the failure mode a leftover temp file would
+  // come from if the cleanup on that path were missing.
+  const dirPath = `${RELATIVE_DIR}/rename-failure-dir`;
+  await callTool("create_directory", { path: dirPath });
+
+  const result = await callTool("write_text_file", { path: dirPath, content: "x" });
+  assert.equal(result.isError, true);
+  assert.match(parseToolText(result), /E_IS_DIRECTORY/);
+
+  const siblingEntries = await readdir(TEST_DIRECTORY);
+  const leftoverTempFiles = siblingEntries.filter((name) => name.startsWith(".notion-mcp-write-"));
+  assert.deepEqual(leftoverTempFiles, []);
+});
+
+test("create_directory refuses to create a directory whose parent does not exist", async () => {
+  const result = await callTool("create_directory", {
+    path: `${RELATIVE_DIR}/no-such-parent/child`,
+  });
+  assert.equal(result.isError, true);
+  assert.match(parseToolText(result), /E_NOT_FOUND/);
+
+  await assert.rejects(stat(path.join(TEST_DIRECTORY, "no-such-parent", "child")));
+});
+
+test("concurrent writes to the same path never produce a partial or mixed file", async () => {
+  const relative = `${RELATIVE_DIR}/concurrent-target.txt`;
+  const size = 200_000; // large enough that a naive write would take measurable time
+  const payloads = ["A", "B", "C", "D", "E"].map((char) => char.repeat(size));
+
+  const results = await Promise.all(
+    payloads.map((content) => callTool("write_text_file", { path: relative, content })),
+  );
+  for (const result of results) {
+    assert.equal(result.isError, undefined, "every concurrent write should succeed");
+  }
+
+  const finalContent = await readFile(path.join(TEST_DIRECTORY, "concurrent-target.txt"), "utf8");
+  // Whichever write landed last, the file must be entirely one of the five
+  // payloads - never a splice of two of them, and never short.
+  assert.equal(finalContent.length, size);
+  const firstChar = finalContent[0];
+  assert.ok(["A", "B", "C", "D", "E"].includes(firstChar));
+  assert.equal(finalContent, firstChar.repeat(size));
 });

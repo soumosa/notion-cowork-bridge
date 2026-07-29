@@ -12,6 +12,8 @@ usage() {
   echo "  --workspace <absolute-path>  Workspace exposed to file tools"
   echo "                               (default: \$HOME/notion-workspace)"
   echo "  --port <1-65535>             Local MCP port (default: 3210)"
+  echo "  --traffic-policy-file <path> ngrok traffic policy file for the tunnel"
+  echo "                               (default: \$NGROK_TRAFFIC_POLICY_FILE if set)"
   echo "  --dry-run                    Validate and print the plan, change nothing"
   echo "  -h, --help                   Show this help"
 }
@@ -19,6 +21,7 @@ usage() {
 workspace_root="$HOME/notion-workspace"
 public_host=""
 mcp_port="3210"
+traffic_policy_file="${NGROK_TRAFFIC_POLICY_FILE:-}"
 dry_run=0
 
 while [ $# -gt 0 ]; do
@@ -32,6 +35,9 @@ while [ $# -gt 0 ]; do
     --port)
       [ $# -ge 2 ] || { echo "Missing value for --port" >&2; exit 2; }
       mcp_port="$2"; shift 2 ;;
+    --traffic-policy-file)
+      [ $# -ge 2 ] || { echo "Missing value for --traffic-policy-file" >&2; exit 2; }
+      traffic_policy_file="$2"; shift 2 ;;
     --dry-run) dry_run=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -66,6 +72,10 @@ case "$mcp_port" in
   *) [ "$mcp_port" -ge 1 ] && [ "$mcp_port" -le 65535 ] || {
        echo "--port must be an integer from 1 to 65535." >&2; exit 2; } ;;
 esac
+if [ -n "$traffic_policy_file" ] && [ ! -r "$traffic_policy_file" ]; then
+  echo "Traffic policy file is not readable: $traffic_policy_file" >&2
+  exit 2
+fi
 
 node_bin="$(command -v node || true)"
 npm_bin="$(command -v npm || true)"
@@ -111,7 +121,6 @@ fi
 
 mkdir -p \
   "$workspace_root" \
-  "$runtime_root/src" \
   "$runtime_root/scripts" \
   "$config_dir" \
   "$state_dir" \
@@ -120,11 +129,22 @@ chmod 700 "$config_dir"
 
 install -m 0644 "$repo_root/package.json" "$runtime_root/package.json"
 install -m 0644 "$repo_root/package-lock.json" "$runtime_root/package-lock.json"
-install -m 0644 "$repo_root/src/server.js" "$runtime_root/src/server.js"
+rm -rf "$runtime_root/src"
+cp -R "$repo_root/src" "$runtime_root/src"
+find "$runtime_root/src" -type d -exec chmod 0755 {} +
+find "$runtime_root/src" -type f -exec chmod 0644 {} +
 install -m 0755 "$repo_root/scripts/start-bridge-linux.sh" \
   "$runtime_root/scripts/start-bridge-linux.sh"
 
-( cd "$runtime_root" && "$npm_bin" ci --omit=dev )
+( cd "$runtime_root" && "$npm_bin" ci --omit=dev --ignore-scripts )
+
+# Preserve token age across a re-run of this installer; only a freshly
+# created token resets the clock.
+token_created_at=""
+if [ -r "$config_file" ]; then
+  # shellcheck disable=SC1090
+  token_created_at="$(. "$config_file" 2>/dev/null; echo "${TOKEN_CREATED_AT:-}")"
+fi
 
 # Linux has no equivalent of the macOS Keychain that a user service can rely
 # on: a desktop keyring is often locked when the service starts. A 0600 file
@@ -137,6 +157,7 @@ if [ ! -s "$token_file" ]; then
     od -An -tx1 -N32 /dev/urandom | tr -d ' \n' > "$token_file"
   fi
   chmod 600 "$token_file"
+  token_created_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 fi
 
 umask 077
@@ -145,6 +166,7 @@ NODE_BIN=$node_bin
 NGROK_BIN=$ngrok_bin
 RUNTIME_ROOT=$runtime_root
 TOKEN_FILE=$token_file
+TOKEN_CREATED_AT=$token_created_at
 MCP_WORKSPACE_ROOT=$workspace_root
 MCP_ALLOWED_HOSTS=$public_host
 MCP_PORT=$mcp_port
@@ -159,6 +181,7 @@ After=network-online.target
 
 [Service]
 Type=simple
+Environment=NODE_ENV=production
 ExecStart=$runtime_root/scripts/start-bridge-linux.sh
 Restart=always
 RestartSec=3
@@ -166,6 +189,11 @@ RestartSec=3
 [Install]
 WantedBy=default.target
 EOF
+
+tunnel_exec_start="$ngrok_bin http $mcp_port --url https://$public_host --log stdout"
+if [ -n "$traffic_policy_file" ]; then
+  tunnel_exec_start="$tunnel_exec_start --traffic-policy-file $traffic_policy_file"
+fi
 
 cat > "$unit_dir/notion-cowork-bridge-tunnel.service" <<EOF
 [Unit]
@@ -175,7 +203,7 @@ Wants=notion-cowork-bridge.service
 
 [Service]
 Type=simple
-ExecStart=$ngrok_bin http $mcp_port --url https://$public_host --log stdout
+ExecStart=$tunnel_exec_start
 Restart=always
 RestartSec=5
 

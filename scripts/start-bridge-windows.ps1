@@ -30,6 +30,7 @@ $env:MCP_WORKSPACE_ROOT = $config.WorkspaceRoot
 $env:MCP_ALLOWED_HOSTS = $config.AllowedHosts
 $env:MCP_PORT = [string]$config.Port
 $env:MCP_AUDIT_LOG = $config.AuditLog
+$env:NODE_ENV = 'production'
 
 & $config.NodeBin (Join-Path $config.RuntimeRoot 'src\server.js')
 exit $LASTEXITCODE

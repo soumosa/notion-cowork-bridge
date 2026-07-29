@@ -51,6 +51,14 @@ else
 fi
 chmod 600 "$TOKEN_FILE"
 
+new_created_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+if grep -q '^TOKEN_CREATED_AT=' "$config_file"; then
+  sed -i "s/^TOKEN_CREATED_AT=.*/TOKEN_CREATED_AT=$new_created_at/" "$config_file"
+else
+  echo "TOKEN_CREATED_AT=$new_created_at" >> "$config_file"
+fi
+chmod 600 "$config_file"
+
 systemctl --user restart notion-cowork-bridge.service
 
 healthy=0

@@ -9,10 +9,13 @@ fi
 
 source "$config_file"
 
+security_bin="$(command -v security || print -r -- /usr/bin/security)"
+
 export PATH="$BRIDGE_PATH"
 export SHELL="$COMMAND_SHELL"
+export NODE_ENV="production"
 export MCP_AUTH_TOKEN="$(
-  /usr/bin/security find-generic-password \
+  "$security_bin" find-generic-password \
     -a "$KEYCHAIN_ACCOUNT" \
     -s "$KEYCHAIN_SERVICE" \
     -w

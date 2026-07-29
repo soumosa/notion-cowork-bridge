@@ -32,6 +32,8 @@ if [[ ! -r "$config_file" ]]; then
 fi
 
 source "$config_file"
+security_bin="$(command -v security || print -r -- /usr/bin/security)"
+launchctl_bin="$(command -v launchctl || print -r -- /bin/launchctl)"
 
 if (( ! force )); then
   print "This invalidates the current token. The Notion connection will fail"
@@ -42,14 +44,22 @@ if (( ! force )); then
 fi
 
 new_token="$(/usr/bin/openssl rand -hex 32)"
-/usr/bin/security add-generic-password \
+"$security_bin" add-generic-password \
   -a "$KEYCHAIN_ACCOUNT" \
   -s "$KEYCHAIN_SERVICE" \
   -w "$new_token" \
   -U \
   >/dev/null
 
-/bin/launchctl kickstart -k \
+new_created_at="$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)"
+if /usr/bin/grep -q '^TOKEN_CREATED_AT=' "$config_file"; then
+  /usr/bin/sed -i '' "s/^TOKEN_CREATED_AT=.*/TOKEN_CREATED_AT=$new_created_at/" "$config_file"
+else
+  print -r -- "TOKEN_CREATED_AT=$new_created_at" >> "$config_file"
+fi
+/bin/chmod 0600 "$config_file"
+
+"$launchctl_bin" kickstart -k \
   "gui/$(/usr/bin/id -u)/com.notion-cowork-bridge.mcp" \
   >/dev/null 2>&1 || {
   print -u2 "Stored the new token, but the bridge service was not running."

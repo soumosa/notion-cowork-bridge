@@ -1,0 +1,47 @@
+# Sample ngrok traffic policy: a second, independent factor at the edge.
+#
+# The bearer token (MCP_AUTH_TOKEN) is checked inside the bridge itself, on
+# every request. This file adds a cheap check in front of that, at ngrok's
+# edge, before a request ever reaches your machine. The two are independent
+# on purpose: someone who finds the tunnel URL and the bearer token (a
+# screenshot, a synced clipboard, a leaked Notion page) still has to also
+# know the header value below, and a random scanner that only has the URL
+# never gets far enough to learn that this is an MCP server at all — it just
+# sees a 404, same as any other path that doesn't exist.
+#
+# This is not a substitute for the bearer token, and it is not the belt-and-
+# braces of a real firewall or mTLS setup. It is a speed bump: cheap to add,
+# and it raises the cost of casual scanning from zero to "know a secret."
+#
+# Setup:
+#   1. Copy this file somewhere private, e.g. next to your bridge.env:
+#        cp examples/ngrok-traffic-policy.yml ~/.config/notion-cowork-bridge/traffic-policy.yml
+#   2. Replace the placeholder header value below with your own long,
+#      random string (openssl rand -hex 32 works well). Don't reuse the
+#      value in this example file — it's public.
+#   3. Point the installer at it, either flag or env var:
+#        ./scripts/install-macos.sh --host <your-domain> \
+#          --traffic-policy-file ~/.config/notion-cowork-bridge/traffic-policy.yml
+#      or:
+#        export NGROK_TRAFFIC_POLICY_FILE=~/.config/notion-cowork-bridge/traffic-policy.yml
+#   4. Add the same header to the Custom MCP connection in Notion, alongside
+#      the Authorization header it already sends.
+#
+# ngrok's Traffic Policy syntax has changed across versions; if this file
+# doesn't load, check `ngrok traffic-policy validate <file>` (if your ngrok
+# version has it) against ngrok's current reference before assuming the
+# bridge is broken.
+
+on_http_request:
+  - name: require-edge-secret
+    expressions:
+      - >-
+        !('x-bridge-edge-secret' in getReqHeaders()) ||
+        getReqHeaders()['x-bridge-edge-secret'][0] != 'replace-with-a-long-random-value'
+    actions:
+      - type: custom-response
+        config:
+          status_code: 404
+          headers:
+            content-type: "text/plain"
+          body: "404 page not found"

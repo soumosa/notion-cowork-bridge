@@ -16,6 +16,8 @@ param(
     [ValidateRange(1, 65535)]
     [int]$Port = 3210,
 
+    [string]$TrafficPolicyFile = $env:NGROK_TRAFFIC_POLICY_FILE,
+
     [switch]$DryRun
 )
 
@@ -43,6 +45,10 @@ if ($PublicHost -notmatch '^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]
 }
 if (-not [System.IO.Path]::IsPathRooted($Workspace)) {
     Write-Error '-Workspace must be an absolute path.'
+    exit 2
+}
+if ($TrafficPolicyFile -and -not (Test-Path -LiteralPath $TrafficPolicyFile)) {
+    Write-Error "Traffic policy file is not readable: $TrafficPolicyFile"
     exit 2
 }
 
@@ -84,21 +90,35 @@ if ($DryRun) {
 
 & $ngrokBin config check | Out-Null
 
-foreach ($dir in @($Workspace, (Join-Path $runtimeRoot 'src'), (Join-Path $runtimeRoot 'scripts'), $configDir)) {
+foreach ($dir in @($Workspace, (Join-Path $runtimeRoot 'scripts'), $configDir)) {
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
 }
 
 Copy-Item (Join-Path $repoRoot 'package.json') (Join-Path $runtimeRoot 'package.json') -Force
 Copy-Item (Join-Path $repoRoot 'package-lock.json') (Join-Path $runtimeRoot 'package-lock.json') -Force
-Copy-Item (Join-Path $repoRoot 'src\server.js') (Join-Path $runtimeRoot 'src\server.js') -Force
+$runtimeSrc = Join-Path $runtimeRoot 'src'
+if (Test-Path -LiteralPath $runtimeSrc) {
+    Remove-Item -LiteralPath $runtimeSrc -Recurse -Force
+}
+Copy-Item (Join-Path $repoRoot 'src') $runtimeSrc -Recurse -Force
 Copy-Item (Join-Path $repoRoot 'scripts\start-bridge-windows.ps1') $startScript -Force
 
 Push-Location $runtimeRoot
 try {
-    & $npmBin ci --omit=dev
+    & $npmBin ci --omit=dev --ignore-scripts
     if ($LASTEXITCODE -ne 0) { throw "npm ci failed with exit code $LASTEXITCODE" }
 } finally {
     Pop-Location
+}
+
+# Preserve token age across a re-run of this installer; only a freshly
+# created token resets the clock.
+$tokenCreatedAt = $null
+if (Test-Path -LiteralPath $configFile) {
+    $existingConfig = Get-Content -LiteralPath $configFile -Raw | ConvertFrom-Json
+    if ($existingConfig.PSObject.Properties.Name -contains 'TokenCreatedAt') {
+        $tokenCreatedAt = $existingConfig.TokenCreatedAt
+    }
 }
 
 if (-not (Test-Path -LiteralPath $tokenFile)) {
@@ -109,17 +129,19 @@ if (-not (Test-Path -LiteralPath $tokenFile)) {
     ConvertTo-SecureString -String $token -AsPlainText -Force |
         ConvertFrom-SecureString |
         Set-Content -LiteralPath $tokenFile -Encoding ASCII
+    $tokenCreatedAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
 }
 
 [pscustomobject]@{
-    NodeBin       = $nodeBin
-    NgrokBin      = $ngrokBin
-    RuntimeRoot   = $runtimeRoot
-    TokenFile     = $tokenFile
-    WorkspaceRoot = $Workspace
-    AllowedHosts  = $PublicHost
-    Port          = $Port
-    AuditLog      = $auditLog
+    NodeBin         = $nodeBin
+    NgrokBin        = $ngrokBin
+    RuntimeRoot     = $runtimeRoot
+    TokenFile       = $tokenFile
+    TokenCreatedAt  = $tokenCreatedAt
+    WorkspaceRoot   = $Workspace
+    AllowedHosts    = $PublicHost
+    Port            = $Port
+    AuditLog        = $auditLog
 } | ConvertTo-Json | Set-Content -LiteralPath $configFile -Encoding UTF8
 
 $taskSettings = New-ScheduledTaskSettingsSet `
@@ -136,9 +158,13 @@ $bridgeAction = New-ScheduledTaskAction `
 Register-ScheduledTask -TaskName $BridgeTask -Action $bridgeAction -Trigger $trigger `
     -Settings $taskSettings -Force | Out-Null
 
+$tunnelArguments = "http $Port --url https://$PublicHost --log stdout"
+if ($TrafficPolicyFile) {
+    $tunnelArguments += " --traffic-policy-file `"$TrafficPolicyFile`""
+}
 $tunnelAction = New-ScheduledTaskAction `
     -Execute $ngrokBin `
-    -Argument "http $Port --url https://$PublicHost --log stdout"
+    -Argument $tunnelArguments
 Register-ScheduledTask -TaskName $TunnelTask -Action $tunnelAction -Trigger $trigger `
     -Settings $taskSettings -Force | Out-Null
 
