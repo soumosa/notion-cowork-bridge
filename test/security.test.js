@@ -128,7 +128,33 @@ before(async () => {
   auditDirectory = await mkdtemp(path.join(tmpdir(), "notion-bridge-audit-"));
   auditPath = path.join(auditDirectory, "audit.jsonl");
 
-  networkProbe = createHttpServer((_request, response) => {
+  networkProbe = createHttpServer((request, response) => {
+    if (request.url === "/browser-fixture") {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end(`<!doctype html>
+        <button id="counter" onclick="this.textContent = 'Count ' + (Number(this.dataset.count || 0) + 1); this.dataset.count = Number(this.dataset.count || 0) + 1">Count 0</button>
+        <input id="upload" type="file" aria-label="Upload fixture">
+        <script>console.log("browser fixture ready")</script>`);
+      return;
+    }
+    if (request.url === "/echo") {
+      const chunks = [];
+      request.on("data", (chunk) => chunks.push(chunk));
+      request.on("end", () => {
+        const body = Buffer.concat(chunks).toString("utf8");
+        response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+        response.end(JSON.stringify({
+          body,
+          contentLength: request.headers["content-length"] || null,
+        }));
+      });
+      return;
+    }
+    if (request.url === "/redirect-away") {
+      response.writeHead(302, { location: "https://example.com/" });
+      response.end();
+      return;
+    }
     // The content type matters: without it PowerShell's Invoke-WebRequest
     // cannot tell the body is text and hands back a byte array instead.
     response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
@@ -189,7 +215,69 @@ test("the health endpoint does not name the service", async () => {
   assert.deepEqual(body, { status: "ok" });
 });
 
-test("browser opens an allowed loopback page, snapshots, screenshots, and closes", async (t) => {
+test("browser references click elements and upload workspace files", async (t) => {
+  const status = parseToolText(await callTool("browser_status"));
+  if (!status.available) {
+    t.skip("Chrome, Chromium, or Edge is not installed on this test machine.");
+    return;
+  }
+  const uploadPath = `${RELATIVE_DIR}/browser-upload.txt`;
+  await writeFile(path.join(TEST_DIRECTORY, "browser-upload.txt"), "upload fixture");
+  const opened = parseToolText(await callTool("browser_open", {
+    port: networkProbePort,
+    path: "/browser-fixture",
+  }));
+  try {
+    const snapshot = parseToolText(await callTool("browser_snapshot", { session_id: opened.session_id }));
+    const button = snapshot.items.find((item) => item.tag === "button");
+    const upload = snapshot.items.find((item) => item.type === "file");
+    assert.ok(button?.ref);
+    assert.ok(upload?.ref);
+
+    const clicked = parseToolText(await callTool("browser_interact", {
+      session_id: opened.session_id,
+      action: "click",
+      ref: button.ref,
+    }));
+    assert.equal(
+      clicked.items.some((item) => item.tag === "button" && item.text === "Count 1"),
+      true,
+    );
+    const refreshedUpload = clicked.items.find((item) => item.type === "file");
+    assert.ok(refreshedUpload?.ref);
+    const staleUpload = await callTool("browser_upload", {
+      session_id: opened.session_id,
+      ref: upload.ref,
+      path: uploadPath,
+    });
+    assert.equal(staleUpload.isError, true);
+    assert.equal(
+      JSON.parse(staleUpload.content.find((item) => item.type === "text").text).code,
+      "E_STALE_REF",
+    );
+
+    const uploaded = parseToolText(await callTool("browser_upload", {
+      session_id: opened.session_id,
+      ref: refreshedUpload.ref,
+      path: uploadPath,
+    }));
+    assert.equal(typeof uploaded, "object", uploaded);
+    assert.equal(uploaded.uploaded, uploadPath);
+    const uploadedName = parseToolText(await callTool("browser_eval", {
+      session_id: opened.session_id,
+      script: "document.querySelector('#upload').files[0].name",
+    }));
+    assert.equal(uploadedName.value, "browser-upload.txt");
+
+    const image = await callTool("browser_screenshot", { session_id: opened.session_id });
+    assert.equal(image.isError, undefined);
+    assert.equal(image.content[0].type, "image");
+  } finally {
+    await callTool("browser_close", { session_id: opened.session_id });
+  }
+});
+
+test("browser_eval accepts statement blocks without an IIFE", async (t) => {
   const status = parseToolText(await callTool("browser_status"));
   if (!status.available) {
     t.skip("Chrome, Chromium, or Edge is not installed on this test machine.");
@@ -197,15 +285,70 @@ test("browser opens an allowed loopback page, snapshots, screenshots, and closes
   }
   const opened = parseToolText(await callTool("browser_open", {
     port: networkProbePort,
-    path: "/",
+    path: "/browser-fixture",
   }));
-  const snapshot = parseToolText(await callTool("browser_snapshot", { session_id: opened.session_id }));
-  assert.equal(snapshot.session_id, opened.session_id);
-  const image = await callTool("browser_screenshot", { session_id: opened.session_id });
-  assert.equal(image.isError, undefined);
-  assert.equal(image.content[0].type, "image");
-  const closed = parseToolText(await callTool("browser_close", { session_id: opened.session_id }));
-  assert.equal(closed.closed, opened.session_id);
+  try {
+    const result = parseToolText(await callTool("browser_eval", {
+      session_id: opened.session_id,
+      script: "const answer = 40 + 2; return answer;",
+    }));
+    assert.equal(result.value, 42);
+  } finally {
+    await callTool("browser_close", { session_id: opened.session_id });
+  }
+});
+
+test("capture_screenshot saves a fresh PNG without hanging on Chrome descendants", async (t) => {
+  const status = parseToolText(await callTool("browser_status"));
+  if (!status.available) {
+    t.skip("Chrome, Chromium, or Edge is not installed on this test machine.");
+    return;
+  }
+  const outputPath = `${RELATIVE_DIR}/compatibility-screenshot.png`;
+  const captured = parseToolText(await callTool("capture_screenshot", {
+    port: networkProbePort,
+    path: "/browser-fixture",
+    output_path: outputPath,
+    width: 800,
+    height: 600,
+  }));
+  assert.equal(captured.path, outputPath);
+  const bytes = await readFile(path.join(TEST_DIRECTORY, "compatibility-screenshot.png"));
+  assert.deepEqual([...bytes.subarray(0, 4)], [0x89, 0x50, 0x4e, 0x47]);
+});
+
+test("capture_screenshot preserves an existing file when navigation is blocked", async (t) => {
+  const status = parseToolText(await callTool("browser_status"));
+  if (!status.available) {
+    t.skip("Chrome, Chromium, or Edge is not installed on this test machine.");
+    return;
+  }
+  const filename = "failed-screenshot.png";
+  const outputPath = `${RELATIVE_DIR}/${filename}`;
+  await writeFile(path.join(TEST_DIRECTORY, filename), "keep this");
+  const result = await callTool("capture_screenshot", {
+    port: networkProbePort,
+    path: "/redirect-away",
+    output_path: outputPath,
+    width: 800,
+    height: 600,
+  });
+  assert.equal(result.isError, true);
+  assert.equal(await readFile(path.join(TEST_DIRECTORY, filename), "utf8"), "keep this");
+});
+
+test("http_request supplies Content-Length for a string body", async () => {
+  const result = parseToolText(await callTool("http_request", {
+    port: networkProbePort,
+    path: "/echo",
+    method: "POST",
+    headers: { "Content-Length": "999" },
+    body: "hello body",
+    mode: "text",
+  }));
+  const echoed = JSON.parse(result.body);
+  assert.equal(echoed.body, "hello body");
+  assert.equal(echoed.contentLength, String(Buffer.byteLength("hello body")));
 });
 
 test("advertises exactly the tools it means to", async () => {
@@ -284,6 +427,12 @@ test("every tool declares a title, a description and full annotations", async ()
       );
     }
   }
+  const readMedia = tools.find((tool) => tool.name === "read_media_file");
+  assert.equal(readMedia.annotations.readOnlyHint, true);
+  assert.equal(readMedia.annotations.destructiveHint, false);
+  const capture = tools.find((tool) => tool.name === "capture_screenshot");
+  assert.equal(capture.annotations.readOnlyHint, false);
+  assert.equal(capture.annotations.destructiveHint, true);
 });
 
 test("share_preview fails safely when no distinct preview endpoint is configured", async () => {

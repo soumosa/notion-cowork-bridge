@@ -430,10 +430,11 @@ unless `MCP_NGROK_PREVIEW_URL` is configured to a distinct endpoint. Read the se
 gives away more than you think.
 
 **Screenshots.** `capture_screenshot` renders a loopback page to a PNG in the
-workspace using a browser you already have, and `read_media_file` reads any
-image back as an image. No browser is bundled or installed. `http_probe` is
-cheaper and tells the agent more, so reach for the screenshot when the question
-is genuinely about how something looks.
+workspace using the same isolated browser manager as the interactive browser
+tools, and `read_media_file` reads any image back as an image. No browser is
+bundled or installed. `http_probe` is cheaper and tells the agent more, so
+reach for the screenshot when the question is genuinely about how something
+looks.
 
 ## Keeping it running
 
@@ -684,7 +685,7 @@ test skips itself if Bun isn't installed.
 | `MCP_AUDIT_LOG` | per-platform (above) | Where the JSON-lines audit log is written |
 | `MCP_SHELL` | see below | Shell used for terminal commands |
 | `SHELL` | — | Used as the shell on macOS and Linux when `MCP_SHELL` is unset |
-| `MCP_SCREENSHOT_BROWSER` | autodetected | Path to the browser `capture_screenshot` should drive |
+| `MCP_BROWSER_PATH` | autodetected | Path to the Chrome, Chromium, or Edge executable used by all browser tools |
 | `MCP_NGROK_API_URL` | `http://127.0.0.1:4040` | Local ngrok Agent API URL |
 | `MCP_NGROK_PREVIEW_URL` | none | Distinct reserved HTTPS ngrok endpoint required by `share_preview` |
 | `NGROK_TRAFFIC_POLICY_FILE` | none | Read by the installer as the default for `--traffic-policy-file` |
@@ -768,8 +769,8 @@ The full threat model and the disclosure process are in [SECURITY.md](SECURITY.m
   timeout and are killed when the bridge stops.
 - File, search, and media tools never follow symlinks.
 - `capture_screenshot` needs a browser you already have installed.
-- Previews are HTTP request proxying only — WebSocket upgrades aren't forwarded,
-  so hot reload won't reconnect through one.
+- Public previews require a distinct reserved ngrok HTTPS endpoint; the MCP
+  endpoint is never reused for preview traffic.
 - Notion controls plan availability, credits, model access, and Custom Agent
   behavior, and any of it can change without notice.
 - ngrok's plan limits apply on top of everything else.

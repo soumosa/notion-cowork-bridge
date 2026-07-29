@@ -1,6 +1,6 @@
 {
   "name": "notion-cowork-bridge",
-  "version": "1.3.3",
+  "version": "1.3.4",
   "private": true,
   "type": "module",
   "description": "Give a Notion Custom Agent local file tools and an unrestricted terminal through MCP. macOS, Linux, and Windows.",

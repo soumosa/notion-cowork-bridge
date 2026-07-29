@@ -88,7 +88,10 @@ async function closeSession(session) {
 
 async function elementFor(session, ref) {
   const handle = session.refs.get(ref);
-  if (!handle || await handle.isDetached()) {
+  const connected = handle
+    ? await handle.evaluate((element) => element.isConnected).catch(() => false)
+    : false;
+  if (!connected) {
     throw new ToolError(ERROR_CODES.STALE_REF, "Element reference is stale. Call browser_snapshot again.", { ref });
   }
   return handle;
@@ -120,27 +123,77 @@ async function snapshot(session) {
   };
 }
 
-async function openBrowser(ctx, { port, requestPath, width, height }) {
+async function launchLoopbackPage(ctx, { port, requestPath, width, height }) {
   if (!Number.isInteger(port) || port < 1 || port > 65535 || BLOCKED_PORTS.has(port)) {
     throw new ToolError(ERROR_CODES.DENIED, "Browser navigation may only target an allowed loopback app port.", { port });
   }
   if (!requestPath.startsWith("/")) throw new ToolError(ERROR_CODES.INVALID_ARGUMENT, "Path must start with a slash.");
-  if (sessions.size >= MAX_BROWSER_SESSIONS) {
-    throw new ToolError(ERROR_CODES.BUSY, "The active browser-session limit has been reached.");
-  }
   const executablePath = await findBrowser();
   if (!executablePath) {
     throw new ToolError(ERROR_CODES.BROWSER_UNAVAILABLE, "No supported Chrome, Chromium, or Edge executable was found.", { candidates: browserCandidates() });
   }
   const profileDir = await mkdtemp(path.join(tmpdir(), "notion-cowork-browser-"));
-  const context = await chromium.launchPersistentContext(profileDir, {
-    executablePath,
-    headless: true,
-    viewport: { width, height },
-    env: ctx.shell.environment(),
-    args: ["--no-first-run", "--no-default-browser-check", "--disable-extensions"],
-  });
-  const page = context.pages()[0] || await context.newPage();
+  let context;
+  let page;
+  const url = "http://127.0.0.1:" + port + requestPath;
+  try {
+    context = await chromium.launchPersistentContext(profileDir, {
+      executablePath,
+      headless: true,
+      viewport: { width, height },
+      env: ctx.shell.environment(),
+      args: ["--no-first-run", "--no-default-browser-check", "--disable-extensions"],
+    });
+    page = context.pages()[0] || await context.newPage();
+    await page.route("**/*", async (route) => {
+      const request = route.request();
+      if (request.isNavigationRequest() && request.frame() === page.mainFrame() && !isLoopbackUrl(request.url())) {
+        await route.abort("blockedbyclient");
+        return;
+      }
+      await route.continue();
+    });
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    if (!isLoopbackUrl(page.url())) {
+      throw new ToolError(
+        ERROR_CODES.DENIED,
+        "Browser navigation left the allowed loopback app.",
+        { url: page.url() },
+      );
+    }
+    return { context, page, profileDir, url, executablePath };
+  } catch (error) {
+    await context?.close().catch(() => {});
+    await rm(profileDir, { recursive: true, force: true }).catch(() => {});
+    if (error instanceof ToolError) throw error;
+    throw new ToolError(ERROR_CODES.NOT_FOUND, "Browser could not load the loopback page: " + error.message, { url });
+  }
+}
+
+export async function captureLoopbackScreenshot(ctx, options) {
+  const launched = await launchLoopbackPage(ctx, options);
+  try {
+    const image = await launched.page.screenshot({
+      type: "png",
+      fullPage: false,
+      timeout: 30_000,
+    });
+    return {
+      image,
+      url: launched.page.url(),
+      browser: launched.executablePath,
+    };
+  } finally {
+    await launched.context.close().catch(() => {});
+    await rm(launched.profileDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function openBrowser(ctx, options) {
+  if (sessions.size >= MAX_BROWSER_SESSIONS) {
+    throw new ToolError(ERROR_CODES.BUSY, "The active browser-session limit has been reached.");
+  }
+  const { context, page, profileDir, executablePath } = await launchLoopbackPage(ctx, options);
   const id = randomBytes(12).toString("hex");
   const session = {
     id,
@@ -181,24 +234,8 @@ async function openBrowser(ctx, { port, requestPath, width, height }) {
       // Ignore non-URL protocol entries.
     }
   });
-  await page.route("**/*", async (route) => {
-    const request = route.request();
-    if (request.isNavigationRequest() && request.frame() === page.mainFrame() && !isLoopbackUrl(request.url())) {
-      await route.abort("blockedbyclient");
-      return;
-    }
-    await route.continue();
-  });
-  const url = "http://127.0.0.1:" + port + requestPath;
-  try {
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
-  } catch (error) {
-    await context.close().catch(() => {});
-    await rm(profileDir, { recursive: true, force: true }).catch(() => {});
-    throw new ToolError(ERROR_CODES.NOT_FOUND, "Browser could not load the loopback page: " + error.message, { url });
-  }
   sessions.set(id, session);
-  await ctx.audit({ event: "browser.open", sessionId: id, port, path: requestPath });
+  await ctx.audit({ event: "browser.open", sessionId: id, port: options.port, path: options.requestPath });
   return { session_id: id, url: page.url(), title: await page.title(), browser: executablePath };
 }
 
@@ -353,8 +390,17 @@ export function registerBrowserTools(server, ctx) {
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   }, async ({ session_id: id, script }) => {
     try {
-      const value = await sessionFor(id).page.evaluate((source) => Function("return (" + source + ")")(), script);
-      const serialized = JSON.stringify(value);
+      const value = await sessionFor(id).page.evaluate((source) => {
+        let expression;
+        try {
+          expression = Function("return (" + source + "\n)");
+        } catch (error) {
+          if (!(error instanceof SyntaxError)) throw error;
+          return Function(source)();
+        }
+        return expression();
+      }, script);
+      const serialized = JSON.stringify(value) ?? "null";
       if (Buffer.byteLength(serialized, "utf8") > 256 * 1024) throw new ToolError(ERROR_CODES.TOO_LARGE, "Evaluation result exceeds the 256 KiB limit.");
       await ctx.audit({ event: "browser.eval", sessionId: id, scriptSha256: createHash("sha256").update(script).digest("hex") });
       return textResult({ value });

@@ -4,6 +4,23 @@ Notable changes to this project. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.4] - 2026-07-30
+
+### Fixed
+
+- Replace the invalid Playwright element-detachment call so
+  `browser_interact` and `browser_upload` work with current snapshot
+  references and return `E_STALE_REF` for old ones.
+- Run compatibility screenshots through the isolated Playwright browser
+  manager, eliminating the Chrome descendant-pipe hang that caused
+  `capture_screenshot` to time out.
+- Accept either expressions or statement blocks in `browser_eval`, so a
+  multi-statement script no longer needs an explicit IIFE.
+- Compute the exact `Content-Length` for `http_request` bodies instead of
+  requiring callers to supply it.
+- Preserve an existing screenshot when navigation is blocked, and correct the
+  read-media and screenshot MCP safety annotations.
+
 ## [1.3.3] - 2026-07-30
 
 ### Fixed

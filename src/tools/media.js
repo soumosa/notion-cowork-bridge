@@ -5,28 +5,23 @@
  * and also means the agent could not read back a single image it had just
  * produced. `read_media_file` is that missing half.
  *
- * `capture_screenshot` deliberately does not bundle a browser. Playwright and
- * Puppeteer are 150-300 MB, and the reason to trust this bridge is that you
- * can read it in an afternoon; the moment auditing it means auditing
- * Chromium, that stops being true. So it looks for a browser you already
- * have, and tells you plainly what to install if you have none. A screenshot
- * is also the most expensive thing you can hand a model — for "is it up, what
- * does it say, what did the API return", `http_probe` is smaller, faster and
- * more informative. Reach for this when the question is genuinely visual.
+ * `capture_screenshot` uses the same isolated Playwright manager as the
+ * interactive browser tools, backed by a browser already installed on the
+ * host. A screenshot is also the most expensive thing you can hand a model —
+ * for "is it up, what does it say, what did the API return", `http_probe` is
+ * smaller, faster and more informative. Reach for this when the question is
+ * genuinely visual.
  */
 
-import { spawn } from "node:child_process";
-import { access, constants, mkdtemp, readFile, rm, stat } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import * as z from "zod/v4";
 
-import { IS_MACOS, IS_WINDOWS } from "../lib/config.js";
 import { ERROR_CODES, ToolError, errorResult, textResult } from "../lib/errors.js";
 import { atomicWriteWorkspaceBytes } from "../lib/textfile.js";
+import { captureLoopbackScreenshot } from "./browser.js";
 
 const MAX_MEDIA_BYTES = 1024 * 1024;
-const SCREENSHOT_TIMEOUT_MS = 45_000;
 
 const MEDIA_TYPES = new Map([
   [".png", "image/png"],
@@ -56,85 +51,6 @@ function sniffMediaType(buffer, extension) {
   return MEDIA_TYPES.get(extension) || null;
 }
 
-function browserCandidates() {
-  const configured = process.env.MCP_SCREENSHOT_BROWSER;
-  if (configured) return [configured];
-  if (IS_MACOS) {
-    return [
-      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-      "/Applications/Chromium.app/Contents/MacOS/Chromium",
-      "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-      "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
-    ];
-  }
-  if (IS_WINDOWS) {
-    const programFiles = process.env["ProgramFiles"] || "C:\\Program Files";
-    const programFilesX86 =
-      process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
-    return [
-      path.join(programFiles, "Google", "Chrome", "Application", "chrome.exe"),
-      path.join(programFilesX86, "Google", "Chrome", "Application", "chrome.exe"),
-      path.join(programFiles, "Microsoft", "Edge", "Application", "msedge.exe"),
-    ];
-  }
-  return [
-    "/usr/bin/google-chrome",
-    "/usr/bin/chromium",
-    "/usr/bin/chromium-browser",
-    "/usr/bin/microsoft-edge",
-    "/snap/bin/chromium",
-  ];
-}
-
-async function findBrowser() {
-  for (const candidate of browserCandidates()) {
-    try {
-      await access(candidate, constants.X_OK);
-      return candidate;
-    } catch {
-      // Try the next one; a missing browser is normal, not an error.
-    }
-  }
-  return null;
-}
-
-function runBrowser(ctx, browser, args) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(browser, args, {
-      stdio: ["ignore", "ignore", "pipe"],
-      detached: !ctx.isWindows,
-      windowsHide: true,
-      env: ctx.shell.environment(),
-    });
-    let stderr = "";
-    child.stderr.on("data", (chunk) => {
-      if (stderr.length < 8192) stderr += chunk;
-    });
-    const timer = setTimeout(() => {
-      try {
-        if (!ctx.isWindows) process.kill(-child.pid, "SIGKILL");
-        else child.kill("SIGKILL");
-      } catch {
-        child.kill("SIGKILL");
-      }
-      reject(
-        new ToolError(
-          ERROR_CODES.TIMEOUT,
-          `The browser did not finish within ${SCREENSHOT_TIMEOUT_MS}ms.`,
-        ),
-      );
-    }, SCREENSHOT_TIMEOUT_MS);
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      resolve({ code, stderr });
-    });
-  });
-}
-
 export function registerMediaTools(server, ctx) {
   server.registerTool(
     "read_media_file",
@@ -147,7 +63,7 @@ export function registerMediaTools(server, ctx) {
       },
       annotations: {
         readOnlyHint: true,
-        destructiveHint: true,
+        destructiveHint: false,
         idempotentHint: true,
         openWorldHint: false,
       },
@@ -208,7 +124,7 @@ export function registerMediaTools(server, ctx) {
       },
       annotations: {
         readOnlyHint: false,
-        destructiveHint: false,
+        destructiveHint: true,
         idempotentHint: false,
         openWorldHint: false,
       },
@@ -225,18 +141,6 @@ export function registerMediaTools(server, ctx) {
         await ctx.paths.assertNoSymlinkSegments(path.dirname(target));
         await ctx.paths.assertNoSymlinkSegments(target, { allowMissingLeaf: true });
 
-        const browser = await findBrowser();
-        if (!browser) {
-          throw new ToolError(
-            ERROR_CODES.UNSUPPORTED,
-            "No browser found. Install Google Chrome, Chromium or Edge, or set MCP_SCREENSHOT_BROWSER to the path of one.",
-            { looked: browserCandidates() },
-          );
-        }
-
-        const url = `http://127.0.0.1:${port}${requestPath}`;
-        const temporaryDir = await mkdtemp(path.join(tmpdir(), "notion-cowork-shot-"));
-        const temporaryPng = path.join(temporaryDir, "capture.png");
         await ctx.audit({
           event: "capture_screenshot.start",
           port,
@@ -244,23 +148,12 @@ export function registerMediaTools(server, ctx) {
         });
 
         try {
-          const { code, stderr } = await runBrowser(ctx, browser, [
-            "--headless=new",
-            "--disable-gpu",
-            "--hide-scrollbars",
-            `--user-data-dir=${temporaryDir}`,
-            `--window-size=${width},${height}`,
-            `--screenshot=${temporaryPng}`,
-            url,
-          ]);
-          if (code !== 0) {
-            throw new ToolError(
-              ERROR_CODES.INTERNAL,
-              `The browser exited with code ${code}. ${stderr.trim().slice(0, 500)}`,
-              { port, url },
-            );
-          }
-          const image = await readFile(temporaryPng);
+          const { image, url, browser } = await captureLoopbackScreenshot(ctx, {
+            port,
+            requestPath,
+            width,
+            height,
+          });
           if (image.length === 0) {
             throw new ToolError(ERROR_CODES.INTERNAL, "The browser wrote an empty screenshot.", { port, url });
           }
@@ -285,10 +178,8 @@ export function registerMediaTools(server, ctx) {
           throw new ToolError(
             ERROR_CODES.INTERNAL,
             "The browser wrote no fresh screenshot: " + error.message,
-            { port, url },
+            { port },
           );
-        } finally {
-          await rm(temporaryDir, { recursive: true, force: true });
         }
       } catch (error) {
         return errorResult(error);

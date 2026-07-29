@@ -91,6 +91,16 @@ function requestLocal({ port, requestPath, method, headers, body }) {
   return new Promise((resolve, reject) => {
     const started = Date.now();
     let finished = false;
+    const outgoingHeaders = {
+      host: LOOPBACK + ":" + port,
+      ...stripHeaders(headers),
+    };
+    if (body !== undefined) {
+      for (const name of Object.keys(outgoingHeaders)) {
+        if (name.toLowerCase() === "content-length") delete outgoingHeaders[name];
+      }
+      outgoingHeaders["content-length"] = String(Buffer.byteLength(body, "utf8"));
+    }
     const finish = (value) => {
       if (!finished) {
         finished = true;
@@ -102,7 +112,7 @@ function requestLocal({ port, requestPath, method, headers, body }) {
       port,
       path: requestPath,
       method,
-      headers: { host: LOOPBACK + ":" + port, ...stripHeaders(headers) },
+      headers: outgoingHeaders,
       timeout: PROBE_TIMEOUT_MS,
     }, (response) => {
       let bodyBuffer = Buffer.alloc(0);
