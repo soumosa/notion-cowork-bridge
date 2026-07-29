@@ -151,7 +151,14 @@ print "Node: $node_bin"
 print "ngrok: $ngrok_bin"
 
 legacy_detected=0
-[[ -e "$legacy_bridge_plist" || -e "$legacy_gateway_plist" || -e "$legacy_tunnel_plist" ]] && legacy_detected=1
+if [[ -e "$legacy_bridge_plist" || -e "$legacy_gateway_plist" || -e "$legacy_tunnel_plist" ]]; then
+  for legacy_label in com.abcom.notion-mcp.bridge com.abcom.notion-mcp.gateway com.abcom.webterm.ngrok; do
+    if "$launchctl_bin" print "gui/$uid_value/$legacy_label" >/dev/null 2>&1; then
+      legacy_detected=1
+      break
+    fi
+  done
+fi
 if (( legacy_detected && ! migrate_legacy )); then
   print -u2 "Legacy notion-local-mcp services were found. Re-run with --migrate-legacy to avoid duplicate bridges."
   exit 2
@@ -303,6 +310,9 @@ if (( migrate_legacy )); then
   "$launchctl_bin" bootout "gui/$uid_value/com.abcom.notion-mcp.gateway" >/dev/null 2>&1 || true
   "$launchctl_bin" bootout "gui/$uid_value/com.abcom.notion-mcp.bridge" >/dev/null 2>&1 || true
 fi
+# launchd keeps an unloaded process group briefly. Waiting avoids a sporadic
+# bootstrap EIO when a replacement agent reuses its port immediately.
+/bin/sleep 1
 "$launchctl_bin" bootstrap "gui/$uid_value" "$bridge_plist"
 "$launchctl_bin" bootstrap "gui/$uid_value" "$tunnel_plist"
 

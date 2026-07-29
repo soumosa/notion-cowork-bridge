@@ -4,6 +4,12 @@ Notable changes to this project. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.2] - 2026-07-29
+
+### Fixed
+
+- Make repeat macOS migrations reliable by waiting for launchd job teardown and treating inactive legacy plist files as archived configuration rather than active duplicate services.
+
 ## [1.3.1] - 2026-07-29
 
 ### Fixed
