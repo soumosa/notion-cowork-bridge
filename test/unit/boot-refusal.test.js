@@ -17,10 +17,10 @@ const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 // The token check happens at import time, before the server ever tries to
 // bind a port, so these never actually listen on anything - no port needs
 // to be free for them to run.
-function tryBoot(token) {
+function tryBoot(token, overrides = {}) {
   return spawnSync(process.execPath, ["src/server.js"], {
     cwd: PROJECT_ROOT,
-    env: { ...process.env, MCP_AUTH_TOKEN: token },
+    env: { ...process.env, MCP_AUTH_TOKEN: token, ...overrides },
     encoding: "utf8",
     timeout: 10_000,
   });
@@ -49,6 +49,14 @@ test("refuses to start with a token exactly one character short of 32", () => {
   const result = tryBoot("a".repeat(31));
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /MCP_AUTH_TOKEN must be at least 32 characters/);
+});
+
+test("refuses a preview endpoint that is not a plain HTTPS origin", () => {
+  const result = tryBoot("a".repeat(32), {
+    MCP_NGROK_PREVIEW_URL: "http://preview.example.test/has-a-path",
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /MCP_NGROK_PREVIEW_URL must be an HTTPS origin/);
 });
 
 test("starts with a token exactly 32 characters long", async () => {

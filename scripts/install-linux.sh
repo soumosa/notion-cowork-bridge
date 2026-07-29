@@ -141,9 +141,12 @@ install -m 0755 "$repo_root/scripts/start-bridge-linux.sh" \
 # Preserve token age across a re-run of this installer; only a freshly
 # created token resets the clock.
 token_created_at=""
+preview_url=""
 if [ -r "$config_file" ]; then
   # shellcheck disable=SC1090
   token_created_at="$(. "$config_file" 2>/dev/null; echo "${TOKEN_CREATED_AT:-}")"
+  # shellcheck disable=SC1090
+  preview_url="$(. "$config_file" 2>/dev/null; echo "${MCP_NGROK_PREVIEW_URL:-}")"
 fi
 
 # Linux has no equivalent of the macOS Keychain that a user service can rely
@@ -171,6 +174,7 @@ MCP_WORKSPACE_ROOT=$workspace_root
 MCP_ALLOWED_HOSTS=$public_host
 MCP_PORT=$mcp_port
 MCP_AUDIT_LOG=$state_dir/audit.jsonl
+MCP_NGROK_PREVIEW_URL=$preview_url
 EOF
 chmod 600 "$config_file"
 

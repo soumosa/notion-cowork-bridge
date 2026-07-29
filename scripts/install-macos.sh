@@ -196,8 +196,10 @@ fi
 # Preserve token age across a re-run of this installer; only a freshly
 # created token resets the clock.
 token_created_at=""
+preview_url=""
 if [[ -r "$config_file" ]]; then
   token_created_at="$(source "$config_file" 2>/dev/null; print -r -- "${TOKEN_CREATED_AT:-}")"
+  preview_url="$(source "$config_file" 2>/dev/null; print -r -- "${MCP_NGROK_PREVIEW_URL:-}")"
 fi
 
 if ! "$security_bin" find-generic-password \
@@ -234,6 +236,7 @@ fi
   printf 'MCP_ALLOWED_HOSTS=%q\n' "$public_host"
   printf 'MCP_PORT=%q\n' "$mcp_port"
   printf 'MCP_AUDIT_LOG=%q\n' "$log_dir/audit.jsonl"
+  printf 'MCP_NGROK_PREVIEW_URL=%q\n' "$preview_url"
 } > "$config_file"
 /bin/chmod 0600 "$config_file"
 

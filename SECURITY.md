@@ -67,31 +67,14 @@ is the same thing under attack.
 The bridge does not deny commands by pattern. It runs commands with the local user's authority and records an audit-only risk marker for credential-oriented or pipe-to-shell shapes:
 piping a `curl` or `wget` download into a shell, running one through process
 substitution, `cat`-ing a private SSH key, `rm -rf ~`, `rm -rf /`,
-`security dump-keychain`, and `aws sts get-session-token`. The refusal message
-says what it is:
-
-> Refused: *reason*. This is a speed bump, trivially bypassed by anyone actually
-> trying — it exists because the realistic attack is lazy, not a safety
-> guarantee. Run it yourself in a real terminal if you meant it.
-
-I want to be precise about why this exists, because a deny-list in a security
-document invites people to read it as a defence and it is not one. It is seven
-regular expressions. Base64, a variable holding the URL, a here-doc, an
-`eval`, or simply writing the payload to a file and running the file all walk
-straight past it. Anyone who has thought about the bridge for ten minutes
-defeats it.
-
-It is here because the realistic injected payload has not thought about the
-bridge for ten minutes. It is a line copied out of a blog post into a poisoned
-README, and a line copied out of a blog post is exactly the shape a regular
-expression catches. That is a low bar and a real one. It does not protect
-anything, prevent anything, or block an attack; it makes the laziest version
-of the attack fail, and buys nothing at all against a version aimed at you.
+`security dump-keychain`, and `aws sts get-session-token`. These markers are
+for review after a session; they are not a policy engine and they do not stop a
+command.
 
 Separately, and more usefully: any command that so much as mentions `.ssh`,
 `.aws`, `.npmrc`, `.git-credentials`, `.env`, a keychain, or a pipe into a
-shell is written to the audit log with `flagged: true`, whether it was refused
-or ran normally. That is the field to review:
+shell is written to the audit log with `flagged: true`, whether it ran normally
+or failed. That is the field to review:
 
 ```sh
 jq 'select(.flagged)' audit.jsonl
@@ -99,9 +82,9 @@ jq 'select(.flagged)' audit.jsonl
 
 If that returns nothing after a session, nothing went near your credentials. If
 it returns something you did not ask for, you have found your prompt injection.
-The flag is deliberately broader than the refusal list, because a marker on a
-command that turns out to be innocent costs you a second of reading and a
-missing marker costs you the incident.
+The flag is deliberately broad: a marker on a command that turns out to be
+innocent costs you a second of reading and a missing marker costs you the
+incident.
 
 ## What is actually enforced
 
@@ -231,10 +214,10 @@ If that second command lists addresses you can't account for, rotate.
 
 ## `share_preview` is a real exposure
 
-`share_preview` mounts a reverse proxy at `/preview/<token>/` on the bridge's
-own public URL, pointed at one loopback port. It exists because the useful
-version of "the agent built something" is a link a human can click, and getting
-that link out of Notion any other way is miserable.
+`share_preview` creates a relay at the root of a **separate reserved ngrok
+HTTPS endpoint**, pointed at one loopback port. It will not reuse the MCP
+domain. The bootstrap URL contains a one-time token, which is exchanged for a
+host-only cookie before redirecting to `/`.
 
 It is also the only thing in this project that hands access to someone who has
 neither the bearer token nor a shell. **Anyone who ends up with the link reaches
@@ -256,11 +239,10 @@ usually listening on that port is a development server:
 
 The mitigations, and what each one is worth:
 
-- **A 128-bit random token in the path**, compared in constant time. It is in
-  the path rather than a cookie so it can't leak cross-origin from a stale
-  browser session — but a path token appears in browser history, in the
-  `Referer` header of any outbound link the page renders, and in any proxy log
-  between the visitor and ngrok.
+- **A 128-bit random bootstrap token**, compared in constant time and accepted
+  once. The relay exchanges it for a `Secure`, `HttpOnly`, `SameSite=Strict`,
+  host-only cookie, then redirects to `/`; it strips that cookie before
+  forwarding HTTP or WebSocket traffic upstream.
 - **A TTL**, 30 minutes by default and 4 hours at most, checked per request
   rather than on a timer so a clock jump can't extend a share. This is the
   mitigation I trust most, because it fixes the failure I actually expect:
@@ -271,10 +253,9 @@ The mitigations, and what each one is worth:
 - **`..` and `/@fs/` are refused**, on both the raw and the percent-decoded
   path, before anything is forwarded. That closes the specific whole-disk hole
   above. It does not close a route your own app serves.
-- **Hop-by-hop headers are stripped in both directions**, and **WebSocket
-  upgrades are not proxied at all** — so hot reload won't reconnect through a
-  preview. That's a real inconvenience and the honest reason for it is that
-  proxying upgrades properly is a much larger surface than proxying requests.
+- **Hop-by-hop headers are stripped in both directions**, and WebSocket
+  upgrades are proxied after the same host, TTL, cookie, and path checks so
+  Vite-style hot reload can reconnect through a preview.
 - **Every share is audited** on creation, on shutdown, and at most once a minute
   per preview while it is being hit, with the remote address and user agent. Live
   previews also show up in `workspace_info`, so both you and the agent can see
@@ -355,9 +336,8 @@ do about them.
 
 Two things that are **not** vulnerabilities: an authenticated agent being able
 to run arbitrary commands, and a `share_preview` link working for whoever holds
-it. Both are the stated purpose, both are in a warning box at the top of the
-README, and the first is the first paragraph of this file. A way to bypass the
-deny-list isn't one either — see the section above; that is not what it's for.
+it. Both are the stated purpose and both are in a warning box at the top of the
+README.
 
 Things that very much **are**, and that I would want to hear about quickly: a
 path that escapes the workspace through a file, search or media tool; a way to

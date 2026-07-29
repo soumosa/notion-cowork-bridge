@@ -114,10 +114,14 @@ try {
 # Preserve token age across a re-run of this installer; only a freshly
 # created token resets the clock.
 $tokenCreatedAt = $null
+$previewUrl = ''
 if (Test-Path -LiteralPath $configFile) {
     $existingConfig = Get-Content -LiteralPath $configFile -Raw | ConvertFrom-Json
     if ($existingConfig.PSObject.Properties.Name -contains 'TokenCreatedAt') {
         $tokenCreatedAt = $existingConfig.TokenCreatedAt
+    }
+    if ($existingConfig.PSObject.Properties.Name -contains 'NgrokPreviewUrl') {
+        $previewUrl = [string]$existingConfig.NgrokPreviewUrl
     }
 }
 
@@ -142,6 +146,7 @@ if (-not (Test-Path -LiteralPath $tokenFile)) {
     AllowedHosts    = $PublicHost
     Port            = $Port
     AuditLog        = $auditLog
+    NgrokPreviewUrl = $previewUrl
 } | ConvertTo-Json | Set-Content -LiteralPath $configFile -Encoding UTF8
 
 $taskSettings = New-ScheduledTaskSettingsSet `

@@ -162,6 +162,34 @@ export const PREVIEW_TTL_SECONDS = parseInteger(
   24 * 3600,
 );
 export const NGROK_API_URL = process.env.MCP_NGROK_API_URL || "http://127.0.0.1:4040";
+function parseOptionalHttpsOrigin(value, name) {
+  if (value === undefined || value === "") return "";
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`${name} must be an HTTPS origin.`);
+  }
+  if (
+    url.protocol !== "https:" ||
+    url.username ||
+    url.password ||
+    url.pathname !== "/" ||
+    url.search ||
+    url.hash
+  ) {
+    throw new Error(`${name} must be an HTTPS origin without credentials, a path, query, or fragment.`);
+  }
+  return url.origin;
+}
+
+// A preview must never share the public endpoint that carries the MCP bearer
+// token. ngrok free accounts commonly have only one assigned development
+// domain, so make the caller opt into a second, reserved endpoint explicitly.
+export const NGROK_PREVIEW_URL = parseOptionalHttpsOrigin(
+  process.env.MCP_NGROK_PREVIEW_URL,
+  "MCP_NGROK_PREVIEW_URL",
+);
 export const MAX_BROWSER_SESSIONS = parseInteger(
   process.env.MCP_MAX_BROWSER_SESSIONS,
   1,

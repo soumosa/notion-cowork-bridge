@@ -24,10 +24,10 @@ thread where the task was written.
 > network, your developer credentials, and destructive system commands. The
 > threat that actually catches people is **prompt injection** — text in a page
 > or a file steering the agent into running something you never asked for.
-> There is now a second, separate exposure too: `share_preview` puts a locally
-> running app behind a public URL that anyone holding the link can open, with no
-> login. Please read [Security](#security) and [SECURITY.md](SECURITY.md) before
-> you install this.
+> If you configure a distinct preview endpoint, `share_preview` can put a
+> locally running app behind a public URL that anyone holding the link can open,
+> with no login. It never reuses the MCP endpoint for this. Please read
+> [Security](#security) and [SECURITY.md](SECURITY.md) before you install this.
 
 ## What you get
 
@@ -108,12 +108,13 @@ it is.
 
 ```mermaid
 flowchart LR
-    A["Notion Custom Agent"] -->|"HTTPS + bearer token"| B["ngrok assigned domain"]
-    H["Anyone holding a preview link"] -->|"no token, no login"| B
+    A["Notion Custom Agent"] -->|"HTTPS + bearer token"| B["MCP ngrok domain"]
     B --> C["Local MCP bridge<br/>127.0.0.1:3210"]
+    H["Anyone holding a preview link"] -->|"one-time bootstrap URL"| Q["separate preview ngrok domain"]
     C --> D["Scoped file and search tools"]
     C --> E["Normal user shell"]
-    C --> P["share_preview proxy<br/>token in the path, expires"]
+    C --> P["share_preview relay<br/>host-only cookie, expires"]
+    Q --> P
     D --> F["Chosen workspace"]
     E --> F
     E --> G["Network and user-accessible files"]
@@ -420,10 +421,11 @@ a URL, and it will not talk to anything off the loopback interface. That's
 deliberate: a hostname argument is something a poisoned README could point at
 your router.
 
-**`share_preview`** puts a locally running app behind the bridge's own public
-URL, with a random token in the path and a TTL, so you can actually open the
-thing the agent just built. It requires `confirm_public: true`, because it is a
-real exposure and I want you to have typed that. Read the section in
+**`share_preview`** puts a locally running app behind a separate reserved
+ngrok HTTPS endpoint, with a one-time bootstrap URL and a TTL, so you can
+actually open the thing the agent just built. It requires `confirm_public: true`,
+because it is a real exposure and I want you to have typed that. It fails safely
+unless `MCP_NGROK_PREVIEW_URL` is configured to a distinct endpoint. Read the section in
 [SECURITY.md](SECURITY.md) before you use it — a dev server behind a public URL
 gives away more than you think.
 
@@ -569,11 +571,10 @@ intended: the file tools never follow a link, because a link is the easiest way
 out of the workspace. Use `run_terminal_command` if you genuinely need the
 target.
 
-**A command was refused before it ran.** A short list of one-liners — piping a
-download into a shell, reading a private SSH key, `rm -rf ~`, dumping the
-keychain, minting an AWS session token — is refused outright. It's a speed bump,
-not a control; see [SECURITY.md](SECURITY.md) for exactly how little it's worth.
-Run it yourself in a real terminal if you meant it.
+**A terminal command failed unexpectedly.** The bridge does not deny commands
+by pattern. Check the returned exit status and the audit record; commands that
+look credential-oriented or pipe a download into a shell are marked for review,
+not blocked.
 
 **A preview URL returns 403.** Paths containing `..` or `/@fs/` are never
 forwarded. A 404 instead means the link expired or was stopped.
@@ -684,6 +685,8 @@ test skips itself if Bun isn't installed.
 | `MCP_SHELL` | see below | Shell used for terminal commands |
 | `SHELL` | — | Used as the shell on macOS and Linux when `MCP_SHELL` is unset |
 | `MCP_SCREENSHOT_BROWSER` | autodetected | Path to the browser `capture_screenshot` should drive |
+| `MCP_NGROK_API_URL` | `http://127.0.0.1:4040` | Local ngrok Agent API URL |
+| `MCP_NGROK_PREVIEW_URL` | none | Distinct reserved HTTPS ngrok endpoint required by `share_preview` |
 | `NGROK_TRAFFIC_POLICY_FILE` | none | Read by the installer as the default for `--traffic-policy-file` |
 
 The shell defaults to `$SHELL` if it's an absolute path, then `/bin/zsh` on
@@ -693,6 +696,15 @@ for PowerShell, and `/d /s /c` for `cmd.exe`.
 
 The server always binds to `127.0.0.1`. The only public route is the one ngrok
 gives you.
+
+### Preview setup
+
+`share_preview` intentionally requires a **second, distinct** reserved HTTPS
+ngrok endpoint in `MCP_NGROK_PREVIEW_URL`. Do not set it to the MCP domain: that
+would let a preview replace or collide with Notion's authenticated endpoint.
+Many free ngrok accounts have only one assigned development domain, so preview
+sharing remains unavailable until you provision a distinct endpoint; the bridge
+returns `E_PREVIEW_UNAVAILABLE` rather than risking the MCP connection.
 
 ## Security
 
@@ -732,7 +744,7 @@ How I'd deploy it:
 The bridge does strip its own bearer token and the whole family of variables
 that point at it from child command environments, cap stdout and stderr against
 one combined ceiling, allow only one foreground command at a time, enforce a
-120-second ceiling, refuse a short list of catastrophic one-liners, audit failed
+120-second ceiling, audit-only flag risky-looking commands, audit failed
 authentication attempts, and write every consequential action to a hash-chained
 [audit log](#the-audit-log). Those controls prevent accidents and let you
 reconstruct what happened. They are not a sandbox and won't stop a determined

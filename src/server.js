@@ -38,6 +38,7 @@ import {
   BACKGROUND_TOTAL_LOG_LIMIT_BYTES,
   BACKGROUND_RETENTION_HOURS,
   MAX_PREVIEWS,
+  NGROK_PREVIEW_URL,
   PREVIEW_TTL_SECONDS,
   MAX_BROWSER_SESSIONS,
   BROWSER_IDLE_SECONDS,
@@ -170,7 +171,11 @@ function registerWorkspaceInfo(server) {
           totalLogBytes: BACKGROUND_TOTAL_LOG_LIMIT_BYTES,
           retentionHours: BACKGROUND_RETENTION_HOURS,
         },
-        previewLimits: { maxActive: MAX_PREVIEWS, defaultTtlSeconds: PREVIEW_TTL_SECONDS },
+        previewLimits: {
+          maxActive: MAX_PREVIEWS,
+          defaultTtlSeconds: PREVIEW_TTL_SECONDS,
+          distinctEndpointConfigured: Boolean(NGROK_PREVIEW_URL),
+        },
         browserLimits: {
           maxSessions: MAX_BROWSER_SESSIONS,
           idleSeconds: BROWSER_IDLE_SECONDS,

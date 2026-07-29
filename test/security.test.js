@@ -148,6 +148,7 @@ before(async () => {
       MCP_PORT: String(PORT),
       MCP_WORKSPACE_ROOT: WORKSPACE_ROOT,
       MCP_AUDIT_LOG: auditPath,
+      MCP_NGROK_PREVIEW_URL: "",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -283,6 +284,19 @@ test("every tool declares a title, a description and full annotations", async ()
       );
     }
   }
+});
+
+test("share_preview fails safely when no distinct preview endpoint is configured", async () => {
+  const result = await callTool("share_preview", {
+    port: networkProbePort,
+    ttl_minutes: 1,
+    confirm_public: true,
+    allow_unmanaged: true,
+  });
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(parseToolText(result));
+  assert.equal(payload.code, "E_PREVIEW_UNAVAILABLE");
+  assert.match(payload.message, /MCP_NGROK_PREVIEW_URL/);
 });
 
 test("workspace_info reports the platform and the audit log location", async () => {

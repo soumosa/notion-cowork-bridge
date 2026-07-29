@@ -4,6 +4,24 @@ Notable changes to this project. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.3] - 2026-07-30
+
+### Fixed
+
+- Prevent `share_preview` from creating an ngrok tunnel unless a distinct,
+  reserved HTTPS preview endpoint is configured. This avoids colliding with the
+  public MCP endpoint on accounts with a single development domain.
+- Reject raw and repeatedly percent-encoded traversal plus Vite `/@fs/` routes
+  before the preview relay forwards HTTP or WebSocket traffic, and strip the
+  relay cookie from WebSocket upgrades.
+- Correct the README and security model to describe the audit-only terminal
+  policy and the current one-time-bootstrap, host-only-cookie preview flow.
+
+### Changed
+
+- Persist `MCP_NGROK_PREVIEW_URL` through the supported macOS, Linux, and
+  Windows launch configurations when it is already configured.
+
 ## [1.3.2] - 2026-07-29
 
 ### Fixed

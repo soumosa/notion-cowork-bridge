@@ -7,6 +7,7 @@ import * as z from "zod/v4";
 import {
   MAX_PREVIEWS,
   NGROK_API_URL,
+  NGROK_PREVIEW_URL,
   PORT,
   PREVIEW_TTL_SECONDS,
 } from "../lib/config.js";
@@ -34,6 +35,23 @@ function assertRequestPath(requestPath) {
     throw new ToolError(ERROR_CODES.INVALID_ARGUMENT, "Path must start with a slash and contain no line breaks.");
   }
   return requestPath;
+}
+
+export function isForbiddenPreviewPath(requestPath) {
+  const paths = [String(requestPath || "")];
+  try {
+    for (let index = 0; index < 3; index += 1) {
+      const decoded = decodeURIComponent(paths.at(-1));
+      if (decoded === paths.at(-1)) break;
+      paths.push(decoded);
+    }
+  } catch {
+    return true;
+  }
+  return paths.some((value) => {
+    const pathname = value.split("?", 1)[0].toLowerCase();
+    return /(^|\/)\.\.(?:\/|$)/.test(pathname) || /(^|\/)@fs(?:\/|$)/.test(pathname);
+  });
 }
 
 function visibleText(html) {
@@ -168,6 +186,32 @@ async function ngrokRequest(path, options) {
   }
 }
 
+async function reservePreviewEndpoint() {
+  if (!NGROK_PREVIEW_URL) {
+    throw new ToolError(
+      ERROR_CODES.PREVIEW_UNAVAILABLE,
+      "Preview sharing requires MCP_NGROK_PREVIEW_URL: a distinct reserved ngrok HTTPS endpoint. The MCP endpoint must never be reused for previews.",
+    );
+  }
+  const active = await ngrokRequest("/api/tunnels", { method: "GET" });
+  const configuredOrigin = NGROK_PREVIEW_URL;
+  const occupied = (active.tunnels || []).some((tunnel) => {
+    try {
+      return new URL(tunnel.public_url).origin === configuredOrigin;
+    } catch {
+      return false;
+    }
+  });
+  if (occupied) {
+    throw new ToolError(
+      ERROR_CODES.PREVIEW_UNAVAILABLE,
+      "The configured preview endpoint is already in use. Stop the conflicting tunnel before sharing a preview.",
+      { previewEndpoint: configuredOrigin },
+    );
+  }
+  return configuredOrigin;
+}
+
 class PreviewRelay {
   constructor(id, port, token, expiresAt) {
     this.id = id;
@@ -214,7 +258,7 @@ class PreviewRelay {
   }
 
   handle(request, response) {
-    if (!this.hostAllowed(request) || this.expiresAt <= Date.now()) {
+    if (!this.hostAllowed(request) || this.expiresAt <= Date.now() || isForbiddenPreviewPath(request.url)) {
       response.writeHead(404, { "referrer-policy": "no-referrer", "cache-control": "no-store" });
       response.end("Not found");
       return;
@@ -243,10 +287,18 @@ class PreviewRelay {
   }
 
   handleUpgrade(request, socket, head) {
-    if (!this.hostAllowed(request) || this.expiresAt <= Date.now() || !this.authenticated(request)) {
+    if (
+      !this.hostAllowed(request) ||
+      this.expiresAt <= Date.now() ||
+      isForbiddenPreviewPath(request.url) ||
+      !this.authenticated(request)
+    ) {
       socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
       return;
     }
+    const cookies = parseCookies(request.headers.cookie);
+    cookies.delete(AUTH_COOKIE);
+    request.headers.cookie = [...cookies].map(([name, value]) => name + "=" + value).join("; ");
     this.proxy.ws(request, socket, head, { target: "http://" + LOOPBACK + ":" + this.port });
   }
 
@@ -330,6 +382,7 @@ export function registerPreviewTools(server, ctx) {
       if (previews.size >= MAX_PREVIEWS) {
         throw new ToolError(ERROR_CODES.BUSY, "The active preview limit has been reached.");
       }
+      const previewEndpoint = await reservePreviewEndpoint();
       const id = randomBytes(12).toString("hex");
       const token = randomBytes(16).toString("hex");
       const expiresAt = Date.now() + ttlMinutes * 60_000;
@@ -341,10 +394,21 @@ export function registerPreviewTools(server, ctx) {
         tunnel = await ngrokRequest("/api/tunnels", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ name: tunnelName, proto: "http", addr: LOOPBACK + ":" + relayPort, inspect: false }),
+          body: JSON.stringify({ name: tunnelName, proto: "http", addr: LOOPBACK + ":" + relayPort, inspect: false, url: previewEndpoint }),
         });
+        const publicUrl = new URL(tunnel.public_url);
+        if (publicUrl.origin !== previewEndpoint) {
+          throw new ToolError(
+            ERROR_CODES.PREVIEW_UNAVAILABLE,
+            "ngrok did not assign the configured distinct preview endpoint; the preview relay was not exposed.",
+            { expectedEndpoint: previewEndpoint, receivedEndpoint: publicUrl.origin },
+          );
+        }
       } catch (error) {
-        await relay.close();
+        if (tunnel?.name) {
+          await ngrokRequest("/api/tunnels/" + encodeURIComponent(tunnel.name), { method: "DELETE" }).catch(() => null);
+        }
+        await relay.close().catch(() => null);
         throw error;
       }
       const publicUrl = new URL(tunnel.public_url);
