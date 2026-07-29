@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { mkdtempSync, realpathSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { createServer as createHttpServer } from "node:http";
+import {
+  createServer as createHttpServer,
+  request as createHttpRequest,
+} from "node:http";
+import { connect as connectTcp } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
@@ -102,6 +107,64 @@ async function callTool(name, args = {}) {
   }
 }
 
+function publicHttp(requestPath, { method = "GET", headers = {} } = {}) {
+  return new Promise((resolve, reject) => {
+    const request = createHttpRequest({
+      host: "127.0.0.1",
+      port: PORT,
+      path: requestPath,
+      method,
+      headers: {
+        host: "public.example.test",
+        ...headers,
+      },
+    }, (response) => {
+      const chunks = [];
+      response.on("data", (chunk) => chunks.push(chunk));
+      response.on("end", () => resolve({
+        status: response.statusCode,
+        headers: response.headers,
+        body: Buffer.concat(chunks).toString("utf8"),
+      }));
+    });
+    request.on("error", reject);
+    request.end();
+  });
+}
+
+function publicWebSocket(requestPath, cookie, host = "public.example.test") {
+  return new Promise((resolve, reject) => {
+    const socket = connectTcp(PORT, "127.0.0.1");
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(new Error("WebSocket preview handshake timed out."));
+    }, 5_000);
+    socket.once("connect", () => {
+      socket.write([
+        `GET ${requestPath} HTTP/1.1`,
+        `Host: ${host}`,
+        "Connection: Upgrade",
+        "Upgrade: websocket",
+        "Sec-WebSocket-Version: 13",
+        `Sec-WebSocket-Key: ${randomBytes(16).toString("base64")}`,
+        `Cookie: ${cookie}`,
+        "",
+        "",
+      ].join("\r\n"));
+    });
+    socket.once("data", (chunk) => {
+      clearTimeout(timer);
+      const response = chunk.toString("utf8");
+      socket.destroy();
+      resolve(response);
+    });
+    socket.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+  });
+}
+
 async function readAuditRecords() {
   const raw = await readFile(auditPath, "utf8");
   return raw
@@ -155,10 +218,34 @@ before(async () => {
       response.end();
       return;
     }
+    if (request.url === "/cookie") {
+      response.writeHead(200, {
+        "content-type": "text/plain; charset=utf-8",
+        "set-cookie": [
+          "__Host-notion_preview=attacker; Path=/; Secure",
+          "app_session=allowed; Path=/",
+        ],
+      });
+      response.end("cookie fixture");
+      return;
+    }
     // The content type matters: without it PowerShell's Invoke-WebRequest
     // cannot tell the body is text and hands back a byte array instead.
     response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
     response.end("network-ok");
+  });
+  networkProbe.on("upgrade", (request, socket) => {
+    if (request.url !== "/hmr") {
+      socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+      return;
+    }
+    socket.end([
+      "HTTP/1.1 101 Switching Protocols",
+      "Connection: Upgrade",
+      "Upgrade: websocket",
+      "",
+      "",
+    ].join("\r\n"));
   });
   await new Promise((resolve, reject) => {
     networkProbe.once("error", reject);
@@ -174,6 +261,7 @@ before(async () => {
       MCP_PORT: String(PORT),
       MCP_WORKSPACE_ROOT: WORKSPACE_ROOT,
       MCP_AUDIT_LOG: auditPath,
+      MCP_ALLOWED_HOSTS: "public.example.test",
       MCP_NGROK_PREVIEW_URL: "",
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -435,17 +523,80 @@ test("every tool declares a title, a description and full annotations", async ()
   assert.equal(capture.annotations.destructiveHint, true);
 });
 
-test("share_preview fails safely when no distinct preview endpoint is configured", async () => {
-  const result = await callTool("share_preview", {
+test("share_preview securely multiplexes one preview on the existing MCP host", async () => {
+  assert.equal((await publicHttp("/")).status, 404);
+  const shared = parseToolText(await callTool("share_preview", {
+    port: networkProbePort,
+    ttl_minutes: 1,
+    confirm_public: true,
+    allow_unmanaged: true,
+  }));
+  const bootstrap = new URL(shared.url);
+  assert.equal(bootstrap.origin, "https://public.example.test");
+
+  const anonymous = await publicHttp("/");
+  assert.equal(anonymous.status, 404);
+
+  const authenticated = await publicHttp(bootstrap.pathname);
+  assert.equal(authenticated.status, 302);
+  assert.equal(authenticated.headers.location, "/");
+  const cookie = authenticated.headers["set-cookie"][0].split(";", 1)[0];
+  assert.match(cookie, /^__Host-notion_preview=/);
+
+  const reused = await publicHttp(bootstrap.pathname);
+  assert.equal(reused.status, 404);
+
+  const root = await publicHttp("/", { headers: { cookie } });
+  assert.equal(root.status, 200);
+  assert.equal(root.body, "network-ok");
+  assert.equal(root.headers["cache-control"], "no-store");
+  assert.equal(root.headers["referrer-policy"], "no-referrer");
+
+  const cookieAttempt = await publicHttp("/cookie", { headers: { cookie } });
+  assert.deepEqual(cookieAttempt.headers["set-cookie"], [
+    "app_session=allowed; Path=/",
+  ]);
+
+  const forbidden = await publicHttp("/%2540fs/private/file", {
+    headers: { cookie },
+  });
+  assert.equal(forbidden.status, 404);
+
+  const mcp = await publicHttp("/mcp", {
+    method: "POST",
+    headers: {
+      cookie,
+      "content-type": "application/json",
+    },
+  });
+  assert.equal(mcp.status, 401);
+  assert.match(mcp.body, /Unauthorized/);
+  const health = await publicHttp("/health", { headers: { cookie } });
+  assert.equal(health.status, 200);
+  assert.deepEqual(JSON.parse(health.body), { status: "ok" });
+
+  const second = await callTool("share_preview", {
     port: networkProbePort,
     ttl_minutes: 1,
     confirm_public: true,
     allow_unmanaged: true,
   });
-  assert.equal(result.isError, true);
-  const payload = JSON.parse(parseToolText(result));
-  assert.equal(payload.code, "E_PREVIEW_UNAVAILABLE");
-  assert.match(payload.message, /MCP_NGROK_PREVIEW_URL/);
+  assert.equal(second.isError, true);
+  assert.equal(
+    JSON.parse(second.content.find((item) => item.type === "text").text).code,
+    "E_BUSY",
+  );
+
+  const wrongHost = await publicWebSocket("/hmr", cookie, "evil.example.test");
+  assert.match(wrongHost, /^HTTP\/1\.1 404 Not Found/);
+  const websocket = await publicWebSocket("/hmr", cookie);
+  assert.match(websocket, /^HTTP\/1\.1 101 Switching Protocols/);
+
+  const stopped = parseToolText(await callTool("stop_preview", { id: shared.id }));
+  assert.equal(stopped.stopped, 1);
+  assert.equal((await publicHttp("/", { headers: { cookie } })).status, 404);
+  const revokedWebSocket = await publicWebSocket("/hmr", cookie);
+  assert.match(revokedWebSocket, /^HTTP\/1\.1 404 Not Found/);
 });
 
 test("workspace_info reports the platform and the audit log location", async () => {

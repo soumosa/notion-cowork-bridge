@@ -24,9 +24,9 @@ thread where the task was written.
 > network, your developer credentials, and destructive system commands. The
 > threat that actually catches people is **prompt injection** — text in a page
 > or a file steering the agent into running something you never asked for.
-> If you configure a distinct preview endpoint, `share_preview` can put a
-> locally running app behind a public URL that anyone holding the link can open,
-> with no login. It never reuses the MCP endpoint for this. Please read
+> `share_preview` can put a locally running app behind a public URL that anyone
+> holding the link can open, with no login. It safely shares the existing MCP
+> hostname unless you configure a distinct preview endpoint. Please read
 > [Security](#security) and [SECURITY.md](SECURITY.md) before you install this.
 
 ## What you get
@@ -108,13 +108,13 @@ it is.
 
 ```mermaid
 flowchart LR
-    A["Notion Custom Agent"] -->|"HTTPS + bearer token"| B["MCP ngrok domain"]
-    B --> C["Local MCP bridge<br/>127.0.0.1:3210"]
-    H["Anyone holding a preview link"] -->|"one-time bootstrap URL"| Q["separate preview ngrok domain"]
+    A["Notion Custom Agent"] -->|"HTTPS /mcp + bearer token"| B["Shared ngrok hostname"]
+    H["Anyone holding a preview link"] -->|"one-time bootstrap URL"| B
+    B --> C["Local bridge<br/>127.0.0.1:3210"]
     C --> D["Scoped file and search tools"]
     C --> E["Normal user shell"]
     C --> P["share_preview relay<br/>host-only cookie, expires"]
-    Q --> P
+    B -->|"authenticated root paths"| P
     D --> F["Chosen workspace"]
     E --> F
     E --> G["Network and user-accessible files"]
@@ -421,11 +421,12 @@ a URL, and it will not talk to anything off the loopback interface. That's
 deliberate: a hostname argument is something a poisoned README could point at
 your router.
 
-**`share_preview`** puts a locally running app behind a separate reserved
-ngrok HTTPS endpoint, with a one-time bootstrap URL and a TTL, so you can
-actually open the thing the agent just built. It requires `confirm_public: true`,
-because it is a real exposure and I want you to have typed that. It fails safely
-unless `MCP_NGROK_PREVIEW_URL` is configured to a distinct endpoint. Read the section in
+**`share_preview`** puts a locally running app at the root of the existing
+public hostname, with a one-time bootstrap URL and a TTL, so you can actually
+open the thing the agent just built. `/mcp` and `/health` remain reserved for
+the bridge. It requires `confirm_public: true`, because it is a real exposure
+and I want you to have typed that. A distinct endpoint in
+`MCP_NGROK_PREVIEW_URL` remains an optional override. Read the section in
 [SECURITY.md](SECURITY.md) before you use it — a dev server behind a public URL
 gives away more than you think.
 
@@ -577,8 +578,9 @@ by pattern. Check the returned exit status and the audit record; commands that
 look credential-oriented or pipe a download into a shell are marked for review,
 not blocked.
 
-**A preview URL returns 403.** Paths containing `..` or `/@fs/` are never
-forwarded. A 404 instead means the link expired or was stopped.
+**A preview asset returns 404.** Traversal is never forwarded, and Vite
+`/@fs/` paths must resolve to real files inside the configured workspace.
+The same status also means a link expired or was stopped.
 
 **The machine went to sleep.** Both services stop answering. It has to be logged
 in, awake, and online for any of this to work.
@@ -687,7 +689,7 @@ test skips itself if Bun isn't installed.
 | `SHELL` | — | Used as the shell on macOS and Linux when `MCP_SHELL` is unset |
 | `MCP_BROWSER_PATH` | autodetected | Path to the Chrome, Chromium, or Edge executable used by all browser tools |
 | `MCP_NGROK_API_URL` | `http://127.0.0.1:4040` | Local ngrok Agent API URL |
-| `MCP_NGROK_PREVIEW_URL` | none | Distinct reserved HTTPS ngrok endpoint required by `share_preview` |
+| `MCP_NGROK_PREVIEW_URL` | none | Optional distinct HTTPS endpoint instead of sharing the MCP hostname |
 | `NGROK_TRAFFIC_POLICY_FILE` | none | Read by the installer as the default for `--traffic-policy-file` |
 
 The shell defaults to `$SHELL` if it's an absolute path, then `/bin/zsh` on
@@ -700,12 +702,17 @@ gives you.
 
 ### Preview setup
 
-`share_preview` intentionally requires a **second, distinct** reserved HTTPS
-ngrok endpoint in `MCP_NGROK_PREVIEW_URL`. Do not set it to the MCP domain: that
-would let a preview replace or collide with Notion's authenticated endpoint.
-Many free ngrok accounts have only one assigned development domain, so preview
-sharing remains unavailable until you provision a distinct endpoint; the bridge
-returns `E_PREVIEW_UNAVAILABLE` rather than risking the MCP connection.
+By default, `share_preview` reuses the hostname already listed in
+`MCP_ALLOWED_HOSTS`. One active preview may own its root paths; `/mcp` and
+`/health` are never forwarded and the bootstrap token is exchanged for a
+host-only cookie before the app loads. This works with ngrok's single free
+development domain. If `MCP_NGROK_PREVIEW_URL` names a distinct reserved HTTPS
+origin, the bridge uses the separate-endpoint mode instead.
+
+Because shared mode reserves `/mcp` and `/health`, an app whose public UI
+depends on either path needs a distinct endpoint. The optional edge-secret
+policy in `examples/ngrok-traffic-policy.yml` checks only `/mcp`; applying the
+secret to every path would intentionally block human preview traffic.
 
 ## Security
 
@@ -769,8 +776,9 @@ The full threat model and the disclosure process are in [SECURITY.md](SECURITY.m
   timeout and are killed when the bridge stops.
 - File, search, and media tools never follow symlinks.
 - `capture_screenshot` needs a browser you already have installed.
-- Public previews require a distinct reserved ngrok HTTPS endpoint; the MCP
-  endpoint is never reused for preview traffic.
+- Shared-host mode supports one active preview and reserves `/mcp` and
+  `/health`; configure a distinct endpoint only if an app needs those paths or
+  you need two simultaneous previews.
 - Notion controls plan availability, credits, model access, and Custom Agent
   behavior, and any of it can change without notice.
 - ngrok's plan limits apply on top of everything else.

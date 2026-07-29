@@ -313,9 +313,25 @@ if (( migrate_legacy )); then
   "$launchctl_bin" bootout "gui/$uid_value/com.abcom.notion-mcp.gateway" >/dev/null 2>&1 || true
   "$launchctl_bin" bootout "gui/$uid_value/com.abcom.notion-mcp.bridge" >/dev/null 2>&1 || true
 fi
-# launchd keeps an unloaded process group briefly. Waiting avoids a sporadic
-# bootstrap EIO when a replacement agent reuses its port immediately.
-/bin/sleep 1
+
+wait_for_bridge_exit() {
+  local attempt
+  for attempt in {1..50}; do
+    if ! /usr/bin/curl -fsS --max-time 0.2 \
+      "http://127.0.0.1:$mcp_port/health" \
+      >/dev/null 2>&1; then
+      return 0
+    fi
+    /bin/sleep 0.1
+  done
+  print -u2 "The previous bridge process did not stop cleanly; refusing to overlap audit writers."
+  return 1
+}
+
+# bootout can return before the old process finishes its asynchronous shutdown
+# handlers. Do not let two bridge generations append to the audit chain at the
+# same time.
+wait_for_bridge_exit
 "$launchctl_bin" bootstrap "gui/$uid_value" "$bridge_plist"
 "$launchctl_bin" bootstrap "gui/$uid_value" "$tunnel_plist"
 

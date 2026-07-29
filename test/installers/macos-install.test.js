@@ -138,6 +138,28 @@ test(
 );
 
 test(
+  "waits for the previous bridge process to exit before bootstrapping its replacement",
+  { skip: skipReason() },
+  () => {
+    const installer = readFileSync(
+      path.join(PROJECT_ROOT, "scripts", "install-macos.sh"),
+      "utf8",
+    );
+    const bootout = installer.indexOf(
+      '"$launchctl_bin" bootout \\\n  "gui/$uid_value/com.notion-cowork-bridge.mcp"',
+    );
+    const wait = installer.indexOf("wait_for_bridge_exit", bootout);
+    const bootstrap = installer.indexOf(
+      '"$launchctl_bin" bootstrap "gui/$uid_value" "$bridge_plist"',
+      wait,
+    );
+    assert.ok(bootout >= 0, "expected bridge bootout");
+    assert.ok(wait > bootout, "expected an exit wait after bridge bootout");
+    assert.ok(bootstrap > wait, "expected bootstrap only after the exit wait");
+  },
+);
+
+test(
   "wires --traffic-policy-file into a valid tunnel plist",
   { skip: skipReason() },
   () => {

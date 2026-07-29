@@ -116,7 +116,7 @@ incident.
   leave the loopback interface — there is nothing there for injected text to
   point at your cloud metadata endpoint or your router
 - `share_preview` requires an explicit `confirm_public: true`, expires, and
-  refuses to forward `..` or `/@fs/`
+  refuses traversal and Vite `/@fs/` targets outside the configured workspace
 - the installers run `npm ci --ignore-scripts`, and the services run with
   `NODE_ENV=production` so no error handler renders a stack trace to the tunnel
 - the health endpoint is deliberately anonymous: it returns `{"status":"ok"}`
@@ -214,10 +214,12 @@ If that second command lists addresses you can't account for, rotate.
 
 ## `share_preview` is a real exposure
 
-`share_preview` creates a relay at the root of a **separate reserved ngrok
-HTTPS endpoint**, pointed at one loopback port. It will not reuse the MCP
-domain. The bootstrap URL contains a one-time token, which is exchanged for a
-host-only cookie before redirecting to `/`.
+`share_preview` creates a relay at the root of the existing public HTTPS
+hostname, pointed at one loopback port. `/mcp` and `/health` remain permanently
+reserved for the bridge and are never forwarded to the preview. The bootstrap
+URL contains a one-time token, which is exchanged for a host-only cookie before
+redirecting to `/`. If `MCP_NGROK_PREVIEW_URL` is configured, the relay uses
+that distinct origin instead.
 
 It is also the only thing in this project that hands access to someone who has
 neither the bearer token nor a shell. **Anyone who ends up with the link reaches
@@ -230,9 +232,10 @@ usually listening on that port is a development server:
 - **Source maps.** Most dev servers serve them by default, which is your
   original source, comments included.
 - **`.env` through the bundler.** Vite, Next and friends inline environment
-  variables at build time and serve arbitrary disk paths through routes like
-  `/@fs/`. A publicly proxied Vite dev server without that route blocked is
-  whole-disk read access.
+  variables at build time and can serve disk paths through routes like
+  `/@fs/`. The relay permits real `/@fs/` targets only inside the configured
+  workspace, because SvelteKit needs them for its generated development client.
+  Files in that workspace may still be reachable if the dev server serves them.
 - **Admin and debug routes that assume localhost means trusted.** Django's debug
   toolbar, Rails' `/rails/info`, a seed endpoint, a "reset the database" button
   someone left in because it only ever ran on their laptop.
@@ -250,16 +253,20 @@ The mitigations, and what each one is worth:
 - **`confirm_public: true` is mandatory.** The agent cannot share a port by
   accident or by paraphrase, and the argument's whole job is to make the
   approval prompt you see say what is about to happen.
-- **`..` and `/@fs/` are refused**, on both the raw and the percent-decoded
-  path, before anything is forwarded. That closes the specific whole-disk hole
-  above. It does not close a route your own app serves.
+- **`..` is refused and `/@fs/` is workspace-confined**, on both raw and
+  repeatedly percent-decoded paths, before anything is forwarded. Existing
+  `/@fs/` targets must resolve inside the real workspace; symlinks and outside
+  paths are rejected. This prevents whole-disk access without breaking the
+  generated development client. It does not close a route your own app serves.
+- **Bridge routes stay reserved.** `/mcp`, every path below it, `/health`, and
+  every path below it bypass the preview relay. A preview cookie cannot weaken
+  MCP bearer authentication.
 - **Hop-by-hop headers are stripped in both directions**, and WebSocket
   upgrades are proxied after the same host, TTL, cookie, and path checks so
   Vite-style hot reload can reconnect through a preview.
-- **Every share is audited** on creation, on shutdown, and at most once a minute
-  per preview while it is being hit, with the remote address and user agent. Live
-  previews also show up in `workspace_info`, so both you and the agent can see
-  what is currently exposed.
+- **Every share is audited** on creation and shutdown. Live previews also show
+  up in `workspace_info`, so both you and the agent can see what is currently
+  exposed.
 - **`stop_preview`** revokes one link or all of them, effective on the next
   request, and everything is dropped when the bridge stops.
 
@@ -282,7 +289,9 @@ scanner that finds your domain never learns there is an MCP server behind it.
   --traffic-policy-file ~/.config/notion-cowork-bridge/traffic-policy.yml
 ```
 
-Then add the same header to the Custom MCP connection in Notion.
+Then add the same header to the Custom MCP connection in Notion. The sample
+policy applies it only to `/mcp`; preview traffic is authenticated by the
+one-time bootstrap and relay cookie instead.
 
 This constrains who reaches the door, not what the agent does once inside, which
 is why it is compatible with the design rather than a contradiction of it. It is

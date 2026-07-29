@@ -39,6 +39,7 @@ import {
   BACKGROUND_RETENTION_HOURS,
   MAX_PREVIEWS,
   NGROK_PREVIEW_URL,
+  PUBLIC_ORIGIN,
   PREVIEW_TTL_SECONDS,
   MAX_BROWSER_SESSIONS,
   BROWSER_IDLE_SECONDS,
@@ -75,6 +76,7 @@ if (!process.env.NODE_ENV) process.env.NODE_ENV = "production";
 let commandInFlight = false;
 const shutdownHandlers = [];
 const infoProviders = [];
+const upgradeHandlers = [];
 
 const app = express();
 // Nothing on this server should announce what it is.
@@ -128,6 +130,10 @@ const ctx = {
   onShutdown(handler) {
     shutdownHandlers.push(handler);
   },
+  /** Claim an HTTP upgrade, such as an authenticated preview WebSocket. */
+  onUpgrade(handler) {
+    upgradeHandlers.push(handler);
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -175,6 +181,7 @@ function registerWorkspaceInfo(server) {
           maxActive: MAX_PREVIEWS,
           defaultTtlSeconds: PREVIEW_TTL_SECONDS,
           distinctEndpointConfigured: Boolean(NGROK_PREVIEW_URL),
+          sharedMcpHostAvailable: Boolean(PUBLIC_ORIGIN),
         },
         browserLimits: {
           maxSessions: MAX_BROWSER_SESSIONS,
@@ -415,6 +422,17 @@ const httpServer = app.listen(PORT, HOST, () => {
   console.log(`Shell: ${COMMAND_SHELL}`);
   console.log(`Audit log: ${AUDIT_PATH}`);
   console.log(`Allowed hosts: ${[...ALLOWED_HOSTS].join(", ")}`);
+});
+
+httpServer.on("upgrade", (request, socket, head) => {
+  try {
+    for (const handler of upgradeHandlers) {
+      if (handler(request, socket, head)) return;
+    }
+  } catch (error) {
+    console.error(`WebSocket upgrade failed: ${error.message}`);
+  }
+  socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
 });
 
 httpServer.headersTimeout = HEADERS_TIMEOUT_MS;

@@ -120,6 +120,11 @@ export const ALLOWED_HOSTS = new Set([
     .map((value) => value.trim().toLowerCase())
     .filter(Boolean),
 ]);
+export const PUBLIC_HOST =
+  [...ALLOWED_HOSTS].find(
+    (value) => value !== "127.0.0.1" && value !== "localhost" && value !== "::1",
+  ) || "";
+export const PUBLIC_ORIGIN = PUBLIC_HOST ? `https://${PUBLIC_HOST}` : "";
 
 export const MAX_READ_BYTES = 256 * 1024;
 export const MAX_WRITE_BYTES = 1024 * 1024;
@@ -183,9 +188,9 @@ function parseOptionalHttpsOrigin(value, name) {
   return url.origin;
 }
 
-// A preview must never share the public endpoint that carries the MCP bearer
-// token. ngrok free accounts commonly have only one assigned development
-// domain, so make the caller opt into a second, reserved endpoint explicitly.
+// A distinct preview endpoint remains supported when one is available. Without
+// one, preview.js safely multiplexes one authenticated preview on PUBLIC_ORIGIN
+// while permanently reserving /mcp and /health for the bridge.
 export const NGROK_PREVIEW_URL = parseOptionalHttpsOrigin(
   process.env.MCP_NGROK_PREVIEW_URL,
   "MCP_NGROK_PREVIEW_URL",

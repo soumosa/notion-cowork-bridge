@@ -1,5 +1,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { createServer, request as httpRequest } from "node:http";
+import path from "node:path";
 
 import httpProxy from "http-proxy";
 import * as z from "zod/v4";
@@ -10,8 +12,12 @@ import {
   NGROK_PREVIEW_URL,
   PORT,
   PREVIEW_TTL_SECONDS,
+  PUBLIC_ORIGIN,
+  IS_WINDOWS,
+  WORKSPACE_ROOT,
 } from "../lib/config.js";
 import { ERROR_CODES, ToolError, errorResult, textResult } from "../lib/errors.js";
+import { isInside } from "../lib/paths.js";
 
 const LOOPBACK = "127.0.0.1";
 const PROBE_TIMEOUT_MS = 10_000;
@@ -37,6 +43,21 @@ function assertRequestPath(requestPath) {
   return requestPath;
 }
 
+function isAllowedWorkspaceFsPath(pathname) {
+  const lower = pathname.toLowerCase();
+  if (!lower.startsWith("/@fs/")) return false;
+  let filePath = pathname.slice("/@fs/".length);
+  if (!IS_WINDOWS) filePath = "/" + filePath;
+  if (filePath.includes("\0")) return false;
+  try {
+    const canonicalRoot = realpathSync.native(WORKSPACE_ROOT);
+    const canonicalFile = realpathSync.native(path.resolve(filePath));
+    return isInside(canonicalRoot, canonicalFile);
+  } catch {
+    return false;
+  }
+}
+
 export function isForbiddenPreviewPath(requestPath) {
   const paths = [String(requestPath || "")];
   try {
@@ -49,9 +70,22 @@ export function isForbiddenPreviewPath(requestPath) {
     return true;
   }
   return paths.some((value) => {
-    const pathname = value.split("?", 1)[0].toLowerCase();
-    return /(^|\/)\.\.(?:\/|$)/.test(pathname) || /(^|\/)@fs(?:\/|$)/.test(pathname);
+    const pathname = value.split("?", 1)[0];
+    const lower = pathname.toLowerCase();
+    if (/(^|\/)\.\.(?:\/|$)/.test(lower)) return true;
+    if (!/(^|\/)@fs(?:\/|$)/.test(lower)) return false;
+    return !isAllowedWorkspaceFsPath(pathname);
   });
+}
+
+export function isReservedBridgePath(requestPath) {
+  const pathname = String(requestPath || "").split("?", 1)[0].toLowerCase();
+  return (
+    pathname === "/mcp" ||
+    pathname.startsWith("/mcp/") ||
+    pathname === "/health" ||
+    pathname.startsWith("/health/")
+  );
 }
 
 function visibleText(html) {
@@ -200,7 +234,7 @@ async function reservePreviewEndpoint() {
   if (!NGROK_PREVIEW_URL) {
     throw new ToolError(
       ERROR_CODES.PREVIEW_UNAVAILABLE,
-      "Preview sharing requires MCP_NGROK_PREVIEW_URL: a distinct reserved ngrok HTTPS endpoint. The MCP endpoint must never be reused for previews.",
+      "A distinct preview endpoint requires MCP_NGROK_PREVIEW_URL.",
     );
   }
   const active = await ngrokRequest("/api/tunnels", { method: "GET" });
@@ -222,6 +256,25 @@ async function reservePreviewEndpoint() {
   return configuredOrigin;
 }
 
+async function previewExposure() {
+  if (NGROK_PREVIEW_URL) {
+    return {
+      mode: "distinct",
+      origin: await reservePreviewEndpoint(),
+    };
+  }
+  if (PUBLIC_ORIGIN) {
+    return {
+      mode: "shared-mcp-host",
+      origin: PUBLIC_ORIGIN,
+    };
+  }
+  throw new ToolError(
+    ERROR_CODES.PREVIEW_UNAVAILABLE,
+    "Preview sharing needs either MCP_ALLOWED_HOSTS with a public hostname or MCP_NGROK_PREVIEW_URL.",
+  );
+}
+
 class PreviewRelay {
   constructor(id, port, token, expiresAt) {
     this.id = id;
@@ -231,15 +284,21 @@ class PreviewRelay {
     this.publicHost = null;
     this.usedBootstrap = false;
     this.proxy = httpProxy.createProxyServer({ changeOrigin: true, ws: true, proxyTimeout: PROBE_TIMEOUT_MS, timeout: PROBE_TIMEOUT_MS });
-    this.proxy.on("proxyRes", (upstream, _request, response) => {
-      response.setHeader("referrer-policy", "no-referrer");
-      response.setHeader("cache-control", "no-store");
+    this.proxy.on("proxyRes", (upstream) => {
+      upstream.headers["referrer-policy"] = "no-referrer";
+      upstream.headers["cache-control"] = "no-store";
       const location = upstream.headers.location;
-      if (location) response.setHeader("location", String(location).replace("http://" + LOOPBACK + ":" + this.port, "https://" + this.publicHost));
+      if (location) {
+        upstream.headers.location = String(location).replace(
+          "http://" + LOOPBACK + ":" + this.port,
+          "https://" + this.publicHost,
+        );
+      }
       const setCookie = upstream.headers["set-cookie"];
       if (setCookie) {
         const filtered = setCookie.filter((value) => !String(value).startsWith(AUTH_COOKIE + "="));
-        if (filtered.length) response.setHeader("set-cookie", filtered);
+        if (filtered.length) upstream.headers["set-cookie"] = filtered;
+        else delete upstream.headers["set-cookie"];
       }
     });
     this.proxy.on("error", (_error, _request, response) => {
@@ -313,18 +372,48 @@ class PreviewRelay {
   }
 
   async close() {
+    if (!this.server) return;
     await new Promise((resolve) => this.server.close(resolve));
   }
 }
 
 async function stopEntry(ctx, entry) {
   previews.delete(entry.id);
-  await ngrokRequest("/api/tunnels/" + encodeURIComponent(entry.tunnelName), { method: "DELETE" }).catch(() => null);
+  if (entry.tunnelName) {
+    await ngrokRequest("/api/tunnels/" + encodeURIComponent(entry.tunnelName), {
+      method: "DELETE",
+    }).catch(() => null);
+  }
   await entry.relay.close();
   await ctx.audit({ event: "stop_preview.finish", id: entry.id, port: entry.port });
 }
 
+function sharedHostPreview() {
+  return [...previews.values()].find(
+    (entry) => entry.mode === "shared-mcp-host",
+  );
+}
+
 export function initPreviewTools(ctx) {
+  ctx.app.use((request, response, next) => {
+    if (isReservedBridgePath(request.originalUrl)) {
+      next();
+      return;
+    }
+    const entry = sharedHostPreview();
+    if (!entry) {
+      next();
+      return;
+    }
+    entry.relay.handle(request, response);
+  });
+  ctx.onUpgrade((request, socket, head) => {
+    if (isReservedBridgePath(request.url)) return false;
+    const entry = sharedHostPreview();
+    if (!entry) return false;
+    entry.relay.handleUpgrade(request, socket, head);
+    return true;
+  });
   ctx.addInfo(async () => ({
     activePreviews: [...previews.values()].map((entry) => ({
       id: entry.id,
@@ -332,7 +421,10 @@ export function initPreviewTools(ctx) {
       createdAt: new Date(entry.createdAt).toISOString(),
       expiresAt: new Date(entry.expiresAt).toISOString(),
     })),
-    previewLimit: MAX_PREVIEWS,
+    previewLimit: NGROK_PREVIEW_URL ? MAX_PREVIEWS : Math.min(MAX_PREVIEWS, 1),
+    previewExposureMode: NGROK_PREVIEW_URL
+      ? "distinct_endpoint"
+      : (PUBLIC_ORIGIN ? "shared_mcp_host" : "unavailable"),
   }));
   ctx.onShutdown(async () => {
     await Promise.all([...previews.values()].map((entry) => stopEntry(ctx, entry)));
@@ -389,41 +481,58 @@ export function registerPreviewTools(server, ctx) {
       if (!confirmed || !allowUnmanaged) {
         throw new ToolError(ERROR_CODES.DENIED, "Previewing an unmanaged port requires confirm_public: true and allow_unmanaged: true.");
       }
-      if (previews.size >= MAX_PREVIEWS) {
+      const previewLimit = NGROK_PREVIEW_URL ? MAX_PREVIEWS : Math.min(MAX_PREVIEWS, 1);
+      if (previews.size >= previewLimit) {
         throw new ToolError(ERROR_CODES.BUSY, "The active preview limit has been reached.");
       }
-      const previewEndpoint = await reservePreviewEndpoint();
+      const exposure = await previewExposure();
       const id = randomBytes(12).toString("hex");
       const token = randomBytes(16).toString("hex");
       const expiresAt = Date.now() + ttlMinutes * 60_000;
       const relay = new PreviewRelay(id, port, token, expiresAt);
-      const relayPort = await relay.listen();
-      const tunnelName = "notion-preview-" + id;
+      let tunnelName = null;
       let tunnel;
-      try {
-        tunnel = await ngrokRequest("/api/tunnels", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ name: tunnelName, proto: "http", addr: LOOPBACK + ":" + relayPort, inspect: false, url: previewEndpoint }),
-        });
-        const publicUrl = new URL(tunnel.public_url);
-        if (publicUrl.origin !== previewEndpoint) {
-          throw new ToolError(
-            ERROR_CODES.PREVIEW_UNAVAILABLE,
-            "ngrok did not assign the configured distinct preview endpoint; the preview relay was not exposed.",
-            { expectedEndpoint: previewEndpoint, receivedEndpoint: publicUrl.origin },
-          );
+      if (exposure.mode === "distinct") {
+        const relayPort = await relay.listen();
+        tunnelName = "notion-preview-" + id;
+        try {
+          tunnel = await ngrokRequest("/api/tunnels", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ name: tunnelName, proto: "http", addr: LOOPBACK + ":" + relayPort, inspect: false, url: exposure.origin }),
+          });
+          const publicUrl = new URL(tunnel.public_url);
+          if (publicUrl.origin !== exposure.origin) {
+            throw new ToolError(
+              ERROR_CODES.PREVIEW_UNAVAILABLE,
+              "ngrok did not assign the configured distinct preview endpoint; the preview relay was not exposed.",
+              { expectedEndpoint: exposure.origin, receivedEndpoint: publicUrl.origin },
+            );
+          }
+        } catch (error) {
+          if (tunnel?.name) {
+            await ngrokRequest("/api/tunnels/" + encodeURIComponent(tunnel.name), {
+              method: "DELETE",
+            }).catch(() => null);
+          }
+          await relay.close().catch(() => null);
+          throw error;
         }
-      } catch (error) {
-        if (tunnel?.name) {
-          await ngrokRequest("/api/tunnels/" + encodeURIComponent(tunnel.name), { method: "DELETE" }).catch(() => null);
-        }
-        await relay.close().catch(() => null);
-        throw error;
       }
-      const publicUrl = new URL(tunnel.public_url);
+      const publicUrl = new URL(
+        exposure.mode === "distinct" ? tunnel.public_url : exposure.origin,
+      );
       relay.publicHost = publicUrl.hostname.toLowerCase();
-      const entry = { id, port, relay, tunnelName, createdAt: Date.now(), expiresAt, url: publicUrl.origin + AUTH_PATH + token };
+      const entry = {
+        id,
+        port,
+        relay,
+        mode: exposure.mode,
+        tunnelName,
+        createdAt: Date.now(),
+        expiresAt,
+        url: publicUrl.origin + AUTH_PATH + token,
+      };
       previews.set(id, entry);
       setTimeout(() => {
         if (previews.get(id) === entry) void stopEntry(ctx, entry);

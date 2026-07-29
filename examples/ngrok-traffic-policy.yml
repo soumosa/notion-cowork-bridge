@@ -7,7 +7,9 @@
 # screenshot, a synced clipboard, a leaked Notion page) still has to also
 # know the header value below, and a random scanner that only has the URL
 # never gets far enough to learn that this is an MCP server at all — it just
-# sees a 404, same as any other path that doesn't exist.
+# sees a 404. The rule is deliberately limited to /mcp so a temporary,
+# cookie-authenticated preview can share the same hostname without requiring
+# this MCP-only header.
 #
 # This is not a substitute for the bearer token, and it is not the belt-and-
 # braces of a real firewall or mTLS setup. It is a speed bump: cheap to add,
@@ -36,8 +38,9 @@ on_http_request:
   - name: require-edge-secret
     expressions:
       - >-
-        !('x-bridge-edge-secret' in getReqHeaders()) ||
-        getReqHeaders()['x-bridge-edge-secret'][0] != 'replace-with-a-long-random-value'
+        req.url.path.startsWith('/mcp') &&
+        (!('x-bridge-edge-secret' in getReqHeaders()) ||
+        getReqHeaders()['x-bridge-edge-secret'][0] != 'replace-with-a-long-random-value')
     actions:
       - type: custom-response
         config:

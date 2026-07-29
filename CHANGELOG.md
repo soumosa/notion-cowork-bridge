@@ -4,6 +4,27 @@ Notable changes to this project. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.5] - 2026-07-30
+
+### Added
+
+- Allow one authenticated public preview to share the existing MCP hostname
+  when no distinct ngrok preview endpoint is configured. `/mcp` and `/health`
+  remain permanently reserved for the bridge, while root assets and
+  WebSockets are proxied to the active preview after the one-time bootstrap.
+
+### Fixed
+
+- Strip attempts by an upstream preview app to overwrite the relay's
+  `__Host-notion_preview` cookie, and enforce `Cache-Control: no-store` plus
+  `Referrer-Policy: no-referrer` on proxied responses.
+- Allow Vite and SvelteKit generated `/@fs/` modules only when their canonical
+  target is a real, non-symlinked path inside the configured workspace.
+- Make the macOS installer wait for the old bridge process to finish its audit
+  writes before bootstrapping the replacement runtime.
+- Scope the sample ngrok edge-secret policy to `/mcp`, so human preview
+  requests on the shared hostname do not need the MCP-only secret header.
+
 ## [1.3.4] - 2026-07-30
 
 ### Fixed
